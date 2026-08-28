@@ -1643,6 +1643,7 @@ function closeNetwork(){
   networkConnections.clear();
   if(networkPeer){ networkPeer.destroy(); networkPeer = null; }
   networkPeerId = '';
+  lastSharedMazeKey = '';
 }
 function bindNetworkConnection(connection){
   networkConnections.set(connection.peer, connection);
@@ -2524,6 +2525,7 @@ function applySharedWorldState(world){
   state.enemiesRemaining = Number(world.enemiesRemaining);
   if(!Number.isFinite(state.enemiesRemaining)) state.enemiesRemaining = world.enemies.filter(enemy=>enemy.alive).length;
   state.betweenWaves = Boolean(world.betweenWaves);
+  if(world.gameMode && world.gameMode !== gameMode) setGameMode(world.gameMode);
   const incomingIds = new Set();
   for(const enemyState of world.enemies){
     const id = String(enemyState.id);
@@ -2570,7 +2572,7 @@ function getGameState(){
       maxHealth:player.maxHp,
       alive:player.alive
     },
-    game:{wave:state.wave, score:state.score, enemiesRemaining:state.enemiesRemaining, betweenWaves:state.betweenWaves},
+    game:{wave:state.wave, score:state.score, enemiesRemaining:state.enemiesRemaining, betweenWaves:state.betweenWaves, gameMode:gameMode},
     world:getSharedWorldState()
   };
 }
@@ -3149,7 +3151,11 @@ function enterArena(useTouch){
   gameStarted = true;
   updateHudStyle();
   startNetworkSendLoop();
-  startWave();
+  if(multiplayerMode === 'online-guest'){
+    setMultiplayerStatus('Connected. Waiting for the host to start the shared level…');
+  } else {
+    startWave();
+  }
   startBackgroundMusic(); // Kicks off the 90s techno synth music!
   if(!useTouch && canvas.requestPointerLock) canvas.requestPointerLock();
 }
