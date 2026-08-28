@@ -1277,7 +1277,7 @@ function spawnWaveEnemies(){
     if(type === 'magic') baseColorHex = 0x3ba7ff;
 
     enemies.push({
-      mesh, hp, maxHp:hp, speed: speed*(type==='melee'?1:0.85),
+      mesh, networkId:'enemy-'+state.wave+'-'+i, hp, maxHp:hp, speed: speed*(type==='melee'?1:0.85),
       type, attackCd:0, alive:true,
       preferredRange: prefRange,
       baseColorHex: baseColorHex,
@@ -2496,6 +2496,67 @@ function getActiveWeaponState(){
   return {id:spell.id, name:spell.name, style:player.style};
 }
 
+function getSharedWorldState(){
+  return {
+    maze:currentMazeData ? JSON.parse(JSON.stringify(currentMazeData)) : null,
+    enemies:enemies.map((enemy, index)=>({
+      id:enemy.networkId || ('enemy-'+index),
+      x:enemy.mesh.position.x, y:enemy.mesh.position.y, z:enemy.mesh.position.z,
+      hp:enemy.hp, maxHp:enemy.maxHp, speed:enemy.speed, type:enemy.type,
+      alive:enemy.alive, preferredRange:enemy.preferredRange, attackCd:enemy.attackCd,
+      baseColorHex:enemy.baseColorHex, frozenTimer:enemy.frozenTimer, stunTimer:enemy.stunTimer,
+      dotTimer:enemy.dotTimer, dotDmg:enemy.dotDmg, dotAcc:enemy.dotAcc,
+      slowTimer:enemy.slowTimer, slowFactor:enemy.slowFactor
+    }))
+  };
+}
+
+let lastSharedMazeKey = '';
+function applySharedWorldState(world){
+  if(!world || !Array.isArray(world.enemies)) return;
+  const mazeKey = JSON.stringify(world.maze || null);
+  if(world.maze && mazeKey !== lastSharedMazeKey){
+    generateInteriorMaze(world.maze);
+    drawRadarBackground();
+    lastSharedMazeKey = mazeKey;
+  }
+  state.wave = Number(world.wave) || state.wave;
+  state.enemiesRemaining = Number(world.enemiesRemaining);
+  if(!Number.isFinite(state.enemiesRemaining)) state.enemiesRemaining = world.enemies.filter(enemy=>enemy.alive).length;
+  state.betweenWaves = Boolean(world.betweenWaves);
+  const incomingIds = new Set();
+  for(const enemyState of world.enemies){
+    const id = String(enemyState.id);
+    incomingIds.add(id);
+    let enemy = enemies.find(candidate=>candidate.networkId===id);
+    if(!enemy){
+      const mesh = makeEnemy(enemyState.type || 'melee');
+      scene.add(mesh);
+      enemy = {mesh, networkId:id, hp:enemyState.hp, maxHp:enemyState.maxHp, speed:enemyState.speed,
+        type:enemyState.type || 'melee', attackCd:0, alive:true, preferredRange:enemyState.preferredRange || 1.4,
+        baseColorHex:enemyState.baseColorHex || 0xdd3b3b, frozenTimer:0, stunTimer:0, dotTimer:0,
+        dotDmg:0, dotAcc:0, slowTimer:0, slowFactor:1};
+      enemies.push(enemy);
+    }
+    enemy.mesh.position.set(Number(enemyState.x)||0, Number(enemyState.y)||0, Number(enemyState.z)||0);
+    enemy.hp = Number(enemyState.hp) || 0;
+    enemy.maxHp = Number(enemyState.maxHp) || enemy.maxHp;
+    enemy.speed = Number(enemyState.speed) || enemy.speed;
+    enemy.attackCd = Number(enemyState.attackCd) || 0;
+    enemy.preferredRange = Number(enemyState.preferredRange) || enemy.preferredRange;
+    enemy.alive = enemyState.alive !== false;
+    enemy.mesh.visible = enemy.alive;
+    if(enemy.alive && !enemy.mesh.parent) scene.add(enemy.mesh);
+    if(!enemy.alive) scene.remove(enemy.mesh);
+  }
+  for(let i=enemies.length-1;i>=0;i--){
+    if(!incomingIds.has(enemies[i].networkId)){
+      scene.remove(enemies[i].mesh);
+      enemies.splice(i,1);
+    }
+  }
+}
+
 function getGameState(){
   const weapon = getActiveWeaponState();
   return {
@@ -2509,12 +2570,14 @@ function getGameState(){
       maxHealth:player.maxHp,
       alive:player.alive
     },
-    game:{wave:state.wave, score:state.score, enemiesRemaining:state.enemiesRemaining, betweenWaves:state.betweenWaves}
+    game:{wave:state.wave, score:state.score, enemiesRemaining:state.enemiesRemaining, betweenWaves:state.betweenWaves},
+    world:getSharedWorldState()
   };
 }
 
 function applyRemoteState(remoteState){
   if(!remoteState || remoteState.id === undefined || remoteState.id === null) return false;
+  if(remoteState.world && multiplayerMode === 'online-guest') applySharedWorldState(Object.assign({}, remoteState.world, remoteState.game || {}));
   const incoming = remoteState.player ? Object.assign({}, remoteState.player, {id:remoteState.id}) : remoteState;
   const id = String(incoming.id);
   if(incoming.remove || incoming.alive === false && incoming.position === undefined){
@@ -3049,7 +3112,7 @@ function frame(now){
     primaryHeldPrev = primaryHeld; secondaryHeldPrev = secondaryHeld;
 
     updateLocalPlayer(dt);
-    updateEnemies(dt, now);
+    if(multiplayerMode !== 'online-guest') updateEnemies(dt, now);
     updateProjectiles(dt);
     updateEffects(dt);
     updateShieldVisual(dt);
@@ -3057,7 +3120,7 @@ function frame(now){
     
     updateViewmodelAnimations(now);
 
-    checkWaveClear();
+    if(multiplayerMode !== 'online-guest') checkWaveClear();
 
     if(player.hp <= 0){ player.hp = 0; die(); }
 
