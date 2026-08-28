@@ -43,6 +43,14 @@
   .cgroup{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.12);border-radius:10px;padding:10px 12px;text-align:left;}
   .cgroup h3{margin:0 0 6px;font-size:12px;letter-spacing:1px;}
   .cgroup div{font-size:11px;opacity:.85;margin:2px 0;}
+  #multiplayerPanel{max-width:860px;width:100%;margin:0 0 16px;padding:14px 16px;background:rgba(20,35,52,.72);border:1px solid rgba(102,217,255,.28);border-radius:10px;text-align:left;box-sizing:border-box;}
+  #multiplayerPanel h3{margin:0 0 10px;color:#66d9ff;font-size:13px;letter-spacing:1.5px;}
+  .mp-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
+  .mp-input{box-sizing:border-box;background:rgba(0,0,0,.3);border:1px solid rgba(255,255,255,.22);border-radius:6px;color:#fff;padding:9px 10px;font:inherit;font-size:13px;min-width:0;}
+  #playerName{width:180px;}
+  #roomCode{width:130px;text-transform:uppercase;letter-spacing:2px;}
+  .mp-status{font-size:11px;opacity:.72;margin-top:9px;min-height:16px;}
+  @media (max-width:700px){#multiplayerPanel{max-height:31vh;overflow:auto}.controls-grid{grid-template-columns:1fr}.overlay{overflow-y:auto;padding:24px 12px;box-sizing:border-box}.overlay h1{font-size:28px}}
   
   button.big{background:linear-gradient(135deg,#ff8a3b,#ff3b6b);border:none;color:#fff;font-size:16px;font-weight:700;letter-spacing:2px;padding:12px 36px;border-radius:24px;cursor:pointer;box-shadow:0 4px 20px rgba(255,80,80,.4);}
   button.big:active{transform:scale(.96);}
@@ -150,6 +158,7 @@
     #touchActionGrid .touchBtn:nth-child(3), #touchActionGrid .touchBtn:nth-child(4) { transform: translateY(0); }
   }
 </style>
+<script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
 </head>
 <body>
 <div id="loadingMsg">LOADING ENGINE&hellip;</div>
@@ -239,6 +248,21 @@
       <div>Unleash shout (Magic only): Y / T key</div>
       <div>Radar top-right shows enemies and walls</div>
     </div>
+  </div>
+
+  <div id="multiplayerPanel">
+    <h3>MULTIPLAYER HUB</h3>
+    <div class="mp-row">
+      <input class="mp-input" id="playerName" maxlength="18" placeholder="Your pilot name" aria-label="Your pilot name">
+      <button class="bindBtn" id="localCoopBtn">LOCAL CO-OP</button>
+      <button class="bindBtn" id="createRoomBtn">CREATE ROOM</button>
+    </div>
+    <div class="mp-row" style="margin-top:8px;">
+      <input class="mp-input" id="roomCode" maxlength="6" placeholder="ROOM CODE" aria-label="Room code">
+      <button class="bindBtn" id="joinRoomBtn">JOIN ROOM</button>
+      <button class="bindBtn" id="copyInviteBtn" style="display:none;">COPY INVITE</button>
+    </div>
+    <div class="mp-status" id="multiplayerStatus">Solo arena selected. Choose local co-op or create a room.</div>
   </div>
 
   <div style="background:rgba(255,255,255,.05); padding: 12px; border-radius: 10px; margin-bottom: 16px; border: 1px solid rgba(255,255,255,.12); max-width: 600px; width: 100%;">
@@ -1147,6 +1171,64 @@ function makeEnemy(type){
   return grp;
 }
 
+class RemotePlayer {
+  constructor(id, initialState){
+    this.id = String(id);
+    this.mesh = makeEnemy('magic');
+    this.mesh.userData.remotePlayerId = this.id;
+    this.mesh.userData.isRemotePlayer = true;
+    this.mesh.userData.parts.forEach(part=>{
+      part.material.color.setHex(0x35e0c0);
+      part.material.emissive.setHex(0x063b38);
+    });
+    scene.add(this.mesh);
+    this.state = { position:{x:0,y:0,z:0}, rotation:{yaw:0,pitch:0}, activeWeapon:'', health:100, maxHealth:100, alive:true, name:'' };
+    this.update(initialState || {});
+  }
+  update(nextState){
+    if(nextState.position){
+      this.state.position.x = Number(nextState.position.x) || 0;
+      this.state.position.y = Number(nextState.position.y) || 0;
+      this.state.position.z = Number(nextState.position.z) || 0;
+    }
+    if(nextState.rotation){
+      this.state.rotation.yaw = Number(nextState.rotation.yaw) || 0;
+      this.state.rotation.pitch = Number(nextState.rotation.pitch) || 0;
+    }
+    if(nextState.activeWeapon !== undefined) this.state.activeWeapon = String(nextState.activeWeapon);
+    if(nextState.health !== undefined) this.state.health = Math.max(0, Number(nextState.health) || 0);
+    if(nextState.maxHealth !== undefined) this.state.maxHealth = Math.max(1, Number(nextState.maxHealth) || 100);
+    if(nextState.alive !== undefined) this.state.alive = Boolean(nextState.alive);
+    if(nextState.name !== undefined) this.state.name = String(nextState.name).slice(0,18);
+    this.mesh.position.set(this.state.position.x, this.state.position.y - EYE_H, this.state.position.z);
+    this.mesh.rotation.y = this.state.rotation.yaw;
+    this.mesh.visible = this.state.alive;
+    this.mesh.userData.remoteState = this.getState();
+  }
+  getState(){
+    return {
+      id:this.id,
+      position:{...this.state.position},
+      rotation:{...this.state.rotation},
+      activeWeapon:this.state.activeWeapon,
+      health:this.state.health,
+      maxHealth:this.state.maxHealth,
+      alive:this.state.alive,
+      name:this.state.name
+    };
+  }
+  destroy(){ scene.remove(this.mesh); }
+}
+
+const remotePlayers = new Map();
+function removeRemotePlayer(id){
+  const remote = remotePlayers.get(String(id));
+  if(!remote) return false;
+  remote.destroy();
+  remotePlayers.delete(String(id));
+  return true;
+}
+
 function randomEdgePoint(){
   const half = ARENA_HALF - 2;
   const side = Math.floor(Math.random()*4);
@@ -1443,6 +1525,13 @@ function getForward(){
 
 const state = { wave:0, enemiesRemaining:0, betweenWaves:true, score:0, precisionMultiplier:1 };
 let gameStarted = false, paused = false;
+let multiplayerMode = 'solo';
+let multiplayerRoom = '';
+let playerName = localStorage.getItem('wf_player_name') || '';
+let networkPeer = null;
+let networkPeerId = '';
+let networkSendTimer = null;
+const networkConnections = new Map();
 let bestWave = parseInt(localStorage.getItem('tf_bestwave')||'0',10);
 let bestScore = parseInt(localStorage.getItem('tf_bestscore')||'0',10);
 document.getElementById('bestWave').textContent = bestWave;
@@ -1518,6 +1607,124 @@ function setGameMode(mode){
   buildModeButtons();
   updateTouchActionVisibility();
   updateHudStyle();
+}
+
+function setMultiplayerStatus(text){
+  const status = document.getElementById('multiplayerStatus');
+  if(status) status.textContent = text;
+}
+function makeRoomCode(){
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let code = '';
+  for(let i=0;i<6;i++) code += alphabet[Math.floor(Math.random()*alphabet.length)];
+  return code;
+}
+function savePlayerName(){
+  playerName = (document.getElementById('playerName').value || '').trim().slice(0,18);
+  if(playerName) localStorage.setItem('wf_player_name', playerName);
+  return playerName || 'Pilot';
+}
+function stopNetworkSendLoop(){
+  if(networkSendTimer){ clearInterval(networkSendTimer); networkSendTimer = null; }
+}
+function startNetworkSendLoop(){
+  if(networkSendTimer || !networkPeer) return;
+  networkSendTimer = setInterval(()=>{
+    if(!gameStarted) return;
+    const packet = Object.assign({}, window.getGameState(), {id:networkPeerId || networkPeer.id});
+    for(const connection of networkConnections.values()){
+      if(connection.open) connection.send(packet);
+    }
+  }, 50);
+}
+function closeNetwork(){
+  stopNetworkSendLoop();
+  for(const connection of networkConnections.values()) connection.close();
+  networkConnections.clear();
+  if(networkPeer){ networkPeer.destroy(); networkPeer = null; }
+  networkPeerId = '';
+}
+function bindNetworkConnection(connection){
+  networkConnections.set(connection.peer, connection);
+  connection.on('open', ()=>{
+    setMultiplayerStatus('Connected to ' + connection.peer + '. Start the match to begin state sync.');
+    startNetworkSendLoop();
+  });
+  connection.on('data', data=>{
+    if(!data || typeof data !== 'object') return;
+    if(data.id === undefined) data.id = connection.peer;
+    window.applyRemoteState(data);
+    if(multiplayerMode === 'online-host'){
+      for(const other of networkConnections.values()){
+        if(other !== connection && other.open) other.send(data);
+      }
+    }
+  });
+  connection.on('close', ()=>{
+    networkConnections.delete(connection.peer);
+    window.removeRemotePlayer(connection.peer);
+    setMultiplayerStatus('Player disconnected. Waiting for another connection.');
+  });
+  connection.on('error', ()=>{
+    networkConnections.delete(connection.peer);
+    window.removeRemotePlayer(connection.peer);
+    setMultiplayerStatus('Connection to ' + connection.peer + ' failed.');
+  });
+}
+function connectPeerRoom(asHost, roomCode){
+  closeNetwork();
+  if(typeof Peer === 'undefined'){
+    setMultiplayerStatus('PeerJS could not load. Single-player remains available.');
+    return;
+  }
+  setMultiplayerStatus(asHost ? 'Creating room ' + roomCode + '…' : 'Connecting to room ' + roomCode + '…');
+  networkPeer = asHost ? new Peer(roomCode) : new Peer();
+  networkPeer.on('open', id=>{
+    networkPeerId = id;
+    if(asHost){
+      setMultiplayerStatus('Room ' + roomCode + ' is live. Waiting for a player…');
+    } else {
+      bindNetworkConnection(networkPeer.connect(roomCode, {reliable:true}));
+    }
+    startNetworkSendLoop();
+  });
+  networkPeer.on('connection', bindNetworkConnection);
+  networkPeer.on('error', error=>{
+    const message = error && error.type === 'unavailable-id' ? 'Room code is already in use. Create another room.' : 'PeerJS connection unavailable. Single-player remains available.';
+    setMultiplayerStatus(message);
+  });
+}
+function createRoom(){
+  savePlayerName();
+  multiplayerMode = 'online-host';
+  multiplayerRoom = makeRoomCode();
+  document.getElementById('roomCode').value = multiplayerRoom;
+  document.getElementById('copyInviteBtn').style.display = 'inline-block';
+  connectPeerRoom(true, multiplayerRoom);
+}
+function joinRoom(){
+  savePlayerName();
+  const code = (document.getElementById('roomCode').value || '').trim().toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,6);
+  if(code.length !== 6){ setMultiplayerStatus('Enter a 6-character room code.'); return; }
+  multiplayerMode = 'online-guest';
+  multiplayerRoom = code;
+  document.getElementById('roomCode').value = code;
+  document.getElementById('copyInviteBtn').style.display = 'inline-block';
+  connectPeerRoom(false, code);
+}
+function selectLocalCoop(){
+  savePlayerName();
+  multiplayerMode = 'local';
+  multiplayerRoom = '';
+  document.getElementById('copyInviteBtn').style.display = 'none';
+  setMultiplayerStatus('Local co-op selected. Networking is disabled and the single-player loop is unchanged.');
+}
+function copyInvite(){
+  if(!multiplayerRoom) return;
+  const invite = location.href.split('#')[0] + '#room=' + multiplayerRoom;
+  if(navigator.clipboard){
+    navigator.clipboard.writeText(invite).then(()=>setMultiplayerStatus('Invite link copied for room ' + multiplayerRoom + '.')).catch(()=>setMultiplayerStatus('Room code: ' + multiplayerRoom));
+  } else setMultiplayerStatus('Room code: ' + multiplayerRoom);
 }
 
 function buildModeButtons(){
@@ -1994,29 +2201,43 @@ function doSecondaryRelease(){
 }
 
 const moveVec = new THREE.Vector3();
-function updateMovement(dt){
+function readLocalInput(){
   let mx=0, my=0;
   if(keys[keyBindings.moveForward]) my -= 1;
   if(keys[keyBindings.moveBack]) my += 1;
   if(keys[keyBindings.moveLeft]) mx -= 1;
   if(keys[keyBindings.moveRight]) mx += 1;
+  let yawDelta = 0, pitchDelta = 0;
   if(gp){
     const lx = gp.axes[0]||0, ly = gp.axes[1]||0;
     if(Math.abs(lx)>0.15) mx += lx;
     if(Math.abs(ly)>0.15) my += ly;
     const rx = gp.axes[2]||0, ry = gp.axes[3]||0;
-    if(Math.abs(rx)>0.12) player.yaw -= rx * 2.4 * dt * lookSensitivity;
-    if(Math.abs(ry)>0.12) player.pitch -= ry * 2.0 * dt * lookSensitivity;
-    player.pitch = Math.max(-1.3, Math.min(1.3, player.pitch));
+    if(Math.abs(rx)>0.12) yawDelta -= rx * 2.4 * lookSensitivity;
+    if(Math.abs(ry)>0.12) pitchDelta -= ry * 2.0 * lookSensitivity;
   }
   if(touchControlsEnabled){
     mx += touchState.mx;
     my += touchState.my;
   }
+  return {
+    moveX:mx,
+    moveY:my,
+    yawDelta,
+    pitchDelta,
+    sprint:Boolean(keys[keyBindings.sprint] || player.sprintToggle)
+  };
+}
+
+function updatePlayerState(dt, input){
+  player.yaw += input.yawDelta * dt;
+  player.pitch += input.pitchDelta * dt;
+  player.pitch = Math.max(-1.3, Math.min(1.3, player.pitch));
+  let mx = input.moveX, my = input.moveY;
   const len = Math.hypot(mx,my);
   if(len>1){ mx/=len; my/=len; }
   const zoomedIn = (player.style==='fps' && player.fpsZoomIndex>0) || (player.style==='melee' && player.meleeZoomOn);
-  const sprinting = (keys[keyBindings.sprint] || player.sprintToggle) && !player.blocking && !zoomedIn && !player.charging;
+  const sprinting = input.sprint && !player.blocking && !zoomedIn && !player.charging;
   const speed = player.blocking ? 2.2 : (zoomedIn || player.charging ? 2.8 : (sprinting ? 8.5 : 5.2));
   const fwd = new THREE.Vector3(-Math.sin(player.yaw), 0, -Math.cos(player.yaw));
   const right = new THREE.Vector3(Math.cos(player.yaw), 0, -Math.sin(player.yaw));
@@ -2040,6 +2261,10 @@ function updateMovement(dt){
   camera.rotation.order = 'YXZ';
   camera.rotation.y = player.yaw;
   camera.rotation.x = player.pitch;
+}
+
+function updateLocalPlayer(dt){
+  updatePlayerState(dt, readLocalInput());
 }
 
 function updateEnemies(dt, now){
@@ -2257,6 +2482,57 @@ function updateHud(){
 
   if(debugOn) updateDebugPanel();
 }
+
+function getActiveWeaponState(){
+  if(player.style==='fps'){
+    const weapon = getUnlockedFPS()[player.fpsSlot] || getUnlockedFPS()[0];
+    return {id:weapon.id, name:weapon.name, style:player.style};
+  }
+  if(player.style==='melee'){
+    const weapon = getUnlockedMelee()[player.meleeSlot] || getUnlockedMelee()[0];
+    return {id:weapon.id, name:weapon.name, style:player.style};
+  }
+  const spell = getUnlockedRTSpells()[player.rtSpellIndex] || getUnlockedRTSpells()[0];
+  return {id:spell.id, name:spell.name, style:player.style};
+}
+
+function getGameState(){
+  const weapon = getActiveWeaponState();
+  return {
+    player:{
+      position:{x:player.pos.x, y:player.pos.y, z:player.pos.z},
+      rotation:{yaw:player.yaw, pitch:player.pitch},
+      activeWeapon:weapon.id,
+      activeWeaponName:weapon.name,
+      style:weapon.style,
+      health:player.hp,
+      maxHealth:player.maxHp,
+      alive:player.alive
+    },
+    game:{wave:state.wave, score:state.score, enemiesRemaining:state.enemiesRemaining, betweenWaves:state.betweenWaves}
+  };
+}
+
+function applyRemoteState(remoteState){
+  if(!remoteState || remoteState.id === undefined || remoteState.id === null) return false;
+  const incoming = remoteState.player ? Object.assign({}, remoteState.player, {id:remoteState.id}) : remoteState;
+  const id = String(incoming.id);
+  if(incoming.remove || incoming.alive === false && incoming.position === undefined){
+    return removeRemotePlayer(id);
+  }
+  let remote = remotePlayers.get(id);
+  if(!remote){
+    remote = new RemotePlayer(id, incoming);
+    remotePlayers.set(id, remote);
+  } else {
+    remote.update(incoming);
+  }
+  return remote.getState();
+}
+
+window.getGameState = getGameState;
+window.applyRemoteState = applyRemoteState;
+window.removeRemotePlayer = removeRemotePlayer;
 function updateDebugPanel(){
   const el = document.getElementById('debugPanel');
   if(!gp){ el.textContent = 'No gamepad detected.'; return; }
@@ -2772,7 +3048,7 @@ function frame(now){
     }
     primaryHeldPrev = primaryHeld; secondaryHeldPrev = secondaryHeld;
 
-    updateMovement(dt);
+    updateLocalPlayer(dt);
     updateEnemies(dt, now);
     updateProjectiles(dt);
     updateEffects(dt);
@@ -2809,6 +3085,7 @@ function enterArena(useTouch){
   
   gameStarted = true;
   updateHudStyle();
+  startNetworkSendLoop();
   startWave();
   startBackgroundMusic(); // Kicks off the 90s techno synth music!
   if(!useTouch && canvas.requestPointerLock) canvas.requestPointerLock();
@@ -2835,6 +3112,16 @@ document.getElementById('resumeBtn').addEventListener('click', ()=>{
   togglePause();
 });
 document.getElementById('startSettingsBtn').addEventListener('click', ()=>openSettings('start'));
+document.getElementById('playerName').value = playerName;
+document.getElementById('localCoopBtn').addEventListener('click', selectLocalCoop);
+document.getElementById('createRoomBtn').addEventListener('click', createRoom);
+document.getElementById('joinRoomBtn').addEventListener('click', joinRoom);
+document.getElementById('copyInviteBtn').addEventListener('click', copyInvite);
+const inviteMatch = location.hash.match(/^#room=([A-Za-z0-9]{6})$/);
+if(inviteMatch){
+  document.getElementById('roomCode').value = inviteMatch[1].toUpperCase();
+  setMultiplayerStatus('Room invite detected. Enter your name and choose JOIN ROOM.');
+}
 document.getElementById('pauseSettingsBtn').addEventListener('click', ()=>openSettings('pause'));
 document.getElementById('settingsBackBtn').addEventListener('click', closeSettings);
 document.getElementById('resetBindsBtn').addEventListener('click', ()=>{
