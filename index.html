@@ -1531,6 +1531,7 @@ let playerName = localStorage.getItem('wf_player_name') || '';
 let networkPeer = null;
 let networkPeerId = '';
 let networkSendTimer = null;
+let legacyRoomFallbackTried = false;
 const networkConnections = new Map();
 let bestWave = parseInt(localStorage.getItem('tf_bestwave')||'0',10);
 let bestScore = parseInt(localStorage.getItem('tf_bestscore')||'0',10);
@@ -1675,12 +1676,13 @@ function bindNetworkConnection(connection){
     setMultiplayerStatus('Connection to ' + connection.peer + ' failed.');
   });
 }
-function connectPeerRoom(asHost, roomCode){
+function connectPeerRoom(asHost, roomCode, useLegacyId){
   closeNetwork();
   if(typeof Peer === 'undefined'){
     setMultiplayerStatus('PeerJS could not load. Single-player remains available.');
     return;
   }
+  const targetPeerId = useLegacyId ? roomCode : roomPeerId(roomCode);
   setMultiplayerStatus(asHost ? 'Creating room ' + roomCode + '…' : 'Connecting to room ' + roomCode + '…');
   networkPeer = asHost ? new Peer(roomPeerId(roomCode)) : new Peer();
   networkPeer.on('open', id=>{
@@ -1688,7 +1690,7 @@ function connectPeerRoom(asHost, roomCode){
     if(asHost){
       setMultiplayerStatus('Room ' + roomCode + ' is live. Waiting for a player…');
     } else {
-      bindNetworkConnection(networkPeer.connect(roomPeerId(roomCode), {reliable:true}));
+      bindNetworkConnection(networkPeer.connect(targetPeerId, {reliable:true}));
     }
     startNetworkSendLoop();
   });
@@ -1697,6 +1699,12 @@ function connectPeerRoom(asHost, roomCode){
     const type = error && error.type;
     let message = 'PeerJS connection unavailable (' + (type || 'unknown error') + '). Single-player remains available.';
     if(type === 'unavailable-id') message = asHost ? 'That room code is already in use. Create another room.' : 'That room is already occupied. Check the code and try again.';
+    if(type === 'peer-unavailable' && !asHost && !useLegacyId && !legacyRoomFallbackTried){
+      legacyRoomFallbackTried = true;
+      setMultiplayerStatus('Trying compatibility connection for room ' + roomCode + '…');
+      connectPeerRoom(false, roomCode, true);
+      return;
+    }
     if(type === 'peer-unavailable' || type === 'disconnected') message = 'Room not found or host is offline. Check the code and try again.';
     setMultiplayerStatus(message);
   });
@@ -1704,6 +1712,7 @@ function connectPeerRoom(asHost, roomCode){
 function createRoom(){
   savePlayerName();
   multiplayerMode = 'online-host';
+  legacyRoomFallbackTried = false;
   multiplayerRoom = makeRoomCode();
   document.getElementById('roomCode').value = multiplayerRoom;
   document.getElementById('copyInviteBtn').style.display = 'inline-block';
@@ -1714,6 +1723,7 @@ function joinRoom(){
   const code = (document.getElementById('roomCode').value || '').trim().toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,6);
   if(code.length !== 6){ setMultiplayerStatus('Enter a 6-character room code.'); return; }
   multiplayerMode = 'online-guest';
+  legacyRoomFallbackTried = false;
   multiplayerRoom = code;
   document.getElementById('roomCode').value = code;
   document.getElementById('copyInviteBtn').style.display = 'inline-block';
