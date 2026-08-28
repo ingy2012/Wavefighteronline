@@ -1619,6 +1619,9 @@ function makeRoomCode(){
   for(let i=0;i<6;i++) code += alphabet[Math.floor(Math.random()*alphabet.length)];
   return code;
 }
+function roomPeerId(roomCode){
+  return 'wavefighter-' + roomCode;
+}
 function savePlayerName(){
   playerName = (document.getElementById('playerName').value || '').trim().slice(0,18);
   if(playerName) localStorage.setItem('wf_player_name', playerName);
@@ -1679,19 +1682,22 @@ function connectPeerRoom(asHost, roomCode){
     return;
   }
   setMultiplayerStatus(asHost ? 'Creating room ' + roomCode + '…' : 'Connecting to room ' + roomCode + '…');
-  networkPeer = asHost ? new Peer(roomCode) : new Peer();
+  networkPeer = asHost ? new Peer(roomPeerId(roomCode)) : new Peer();
   networkPeer.on('open', id=>{
     networkPeerId = id;
     if(asHost){
       setMultiplayerStatus('Room ' + roomCode + ' is live. Waiting for a player…');
     } else {
-      bindNetworkConnection(networkPeer.connect(roomCode, {reliable:true}));
+      bindNetworkConnection(networkPeer.connect(roomPeerId(roomCode), {reliable:true}));
     }
     startNetworkSendLoop();
   });
   networkPeer.on('connection', bindNetworkConnection);
   networkPeer.on('error', error=>{
-    const message = error && error.type === 'unavailable-id' ? 'Room code is already in use. Create another room.' : 'PeerJS connection unavailable. Single-player remains available.';
+    const type = error && error.type;
+    let message = 'PeerJS connection unavailable (' + (type || 'unknown error') + '). Single-player remains available.';
+    if(type === 'unavailable-id') message = asHost ? 'That room code is already in use. Create another room.' : 'That room is already occupied. Check the code and try again.';
+    if(type === 'peer-unavailable' || type === 'disconnected') message = 'Room not found or host is offline. Check the code and try again.';
     setMultiplayerStatus(message);
   });
 }
