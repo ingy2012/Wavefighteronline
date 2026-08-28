@@ -2521,8 +2521,8 @@ function applySharedWorldState(world){
     drawRadarBackground();
     lastSharedMazeKey = mazeKey;
   }
-  state.wave = Number(world.wave) || state.wave;
-  state.enemiesRemaining = Number(world.enemiesRemaining);
+  state.wave = Number(world?.wave) || state.wave;
+  state.enemiesRemaining = Number(world?.enemiesRemaining);
   if(!Number.isFinite(state.enemiesRemaining)) state.enemiesRemaining = world.enemies.filter(enemy=>enemy.alive).length;
   state.betweenWaves = Boolean(world.betweenWaves);
   if(world.gameMode && world.gameMode !== gameMode) setGameMode(world.gameMode);
