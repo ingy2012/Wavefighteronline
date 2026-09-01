@@ -129,11 +129,14 @@
       justify-content:center;
     }
     
-    #hud {
-  max-height: 95vh;
-  overflow-y: auto;
-  -webkit-overflow-scrolling: touch;
-    }
+  /* Enable full page scrolling in landscape mode */
+  body {
+    overflow-y: auto !important;
+    height: auto !important;
+    min-height: 100vh;
+    -webkit-overflow-scrolling: touch;
+  }
+
   }
 
   /* Portrait Layout */
