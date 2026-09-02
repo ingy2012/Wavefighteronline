@@ -1543,6 +1543,11 @@ let networkPeerId = '';
 let networkSendTimer = null;
 let legacyRoomFallbackTried = false;
 const networkConnections = new Map();
+const multiplayerSession = {
+  roomCode: '',
+  mode: 'solo',
+  version: 1
+};
 let bestWave = parseInt(localStorage.getItem('tf_bestwave')||'0',10);
 let bestScore = parseInt(localStorage.getItem('tf_bestscore')||'0',10);
 document.getElementById('bestWave').textContent = bestWave;
@@ -1641,32 +1646,91 @@ function savePlayerName(){
 function stopNetworkSendLoop(){
   if(networkSendTimer){ clearInterval(networkSendTimer); networkSendTimer = null; }
 }
+function getNetworkSessionId(){
+  return multiplayerSession.roomCode || multiplayerRoom || (networkPeerId || 'solo');
+}
 function startNetworkSendLoop(){
-  if(networkSendTimer || !networkPeer) return;
+  stopNetworkSendLoop();
+  if(!networkPeer) return;
   networkSendTimer = setInterval(()=>{
-    if(!gameStarted) return;
-    const packet = Object.assign({}, window.getGameState(), {id:networkPeerId || networkPeer.id});
+    if(!gameStarted || !networkPeer) return;
+    const snapshot = window.getGameState();
+    const packet = {
+      type: 'state-sync',
+      version: multiplayerSession.version,
+      room: multiplayerSession.roomCode || multiplayerRoom || '',
+      sessionId: getNetworkSessionId(),
+      timestamp: Date.now(),
+      id: networkPeerId || networkPeer.id,
+      payload: Object.assign({}, snapshot, {id: networkPeerId || networkPeer.id})
+    };
     for(const connection of networkConnections.values()){
-      if(connection.open) connection.send(packet);
+      if(connection && connection.open) connection.send(packet);
     }
   }, 50);
 }
 function closeNetwork(){
   stopNetworkSendLoop();
-  for(const connection of networkConnections.values()) connection.close();
+  for(const connection of networkConnections.values()){
+    try { connection.close(); } catch (err) {}
+  }
   networkConnections.clear();
-  if(networkPeer){ networkPeer.destroy(); networkPeer = null; }
+  if(networkPeer){
+    try { networkPeer.destroy(); } catch (err) {}
+    networkPeer = null;
+  }
   networkPeerId = '';
+  multiplayerSession.roomCode = '';
   lastSharedMazeKey = '';
 }
 function bindNetworkConnection(connection){
+  if(!connection) return;
   networkConnections.set(connection.peer, connection);
   connection.on('open', ()=>{
-    setMultiplayerStatus('Connected to ' + connection.peer + '. Start the match to begin state sync.');
+    const peerLabel = connection.peer || 'peer';
+    setMultiplayerStatus('Connected to ' + peerLabel + '. Syncing arena state.');
+    try {
+      connection.send({
+        type: 'peer-hello',
+        room: multiplayerSession.roomCode || multiplayerRoom || '',
+        id: networkPeerId || networkPeer.id,
+        name: savePlayerName()
+      });
+    } catch (err) {}
     startNetworkSendLoop();
   });
   connection.on('data', data=>{
     if(!data || typeof data !== 'object') return;
+    if(data.type === 'peer-hello'){
+      try {
+        connection.send({
+          type: 'peer-hello-ack',
+          room: multiplayerSession.roomCode || multiplayerRoom || '',
+          id: networkPeerId || networkPeer.id,
+          name: savePlayerName()
+        });
+      } catch (err) {}
+      return;
+    }
+    if(data.type === 'peer-hello-ack'){
+      setMultiplayerStatus('Peer handshake complete for room ' + (multiplayerSession.roomCode || multiplayerRoom || 'online') + '.');
+      return;
+    }
+    if(data.type === 'state-sync'){
+      const payload = data.payload || data;
+      const packetId = String(data.id || payload.id || connection.peer || '');
+      if(!packetId || packetId === String(networkPeerId || networkPeer.id)) return;
+      if(data.room && multiplayerSession.roomCode && data.room !== multiplayerSession.roomCode) return;
+      window.applyRemoteState(Object.assign({}, payload, {id: packetId}));
+      if(multiplayerMode === 'online-host'){
+        for(const other of networkConnections.values()){
+          if(other !== connection && other.open) {
+            try { other.send(data); } catch (err) {}
+          }
+        }
+      }
+      return;
+    }
     if(data.id === undefined) data.id = connection.peer;
     window.applyRemoteState(data);
     if(multiplayerMode === 'online-host'){
@@ -1692,13 +1756,16 @@ function connectPeerRoom(asHost, roomCode, useLegacyId){
     setMultiplayerStatus('PeerJS could not load. Single-player remains available.');
     return;
   }
-  const targetPeerId = useLegacyId ? roomCode : roomPeerId(roomCode);
-  setMultiplayerStatus(asHost ? 'Creating room ' + roomCode + '…' : 'Connecting to room ' + roomCode + '…');
-  networkPeer = asHost ? new Peer(roomPeerId(roomCode)) : new Peer();
+  const normalisedCode = String(roomCode || '').trim().toUpperCase();
+  multiplayerSession.roomCode = normalisedCode;
+  multiplayerRoom = normalisedCode;
+  const targetPeerId = useLegacyId ? normalisedCode : roomPeerId(normalisedCode);
+  setMultiplayerStatus(asHost ? 'Creating room ' + normalisedCode + '…' : 'Connecting to room ' + normalisedCode + '…');
+  networkPeer = asHost ? new Peer(roomPeerId(normalisedCode)) : new Peer();
   networkPeer.on('open', id=>{
     networkPeerId = id;
     if(asHost){
-      setMultiplayerStatus('Room ' + roomCode + ' is live. Waiting for a player…');
+      setMultiplayerStatus('Room ' + normalisedCode + ' is live. Waiting for a player…');
     } else {
       bindNetworkConnection(networkPeer.connect(targetPeerId, {reliable:true}));
     }
@@ -1711,8 +1778,8 @@ function connectPeerRoom(asHost, roomCode, useLegacyId){
     if(type === 'unavailable-id') message = asHost ? 'That room code is already in use. Create another room.' : 'That room is already occupied. Check the code and try again.';
     if(type === 'peer-unavailable' && !asHost && !useLegacyId && !legacyRoomFallbackTried){
       legacyRoomFallbackTried = true;
-      setMultiplayerStatus('Trying compatibility connection for room ' + roomCode + '…');
-      connectPeerRoom(false, roomCode, true);
+      setMultiplayerStatus('Trying compatibility connection for room ' + normalisedCode + '…');
+      connectPeerRoom(false, normalisedCode, true);
       return;
     }
     if(type === 'peer-unavailable' || type === 'disconnected') message = 'Room not found or host is offline. Check the code and try again.';
@@ -1722,6 +1789,7 @@ function connectPeerRoom(asHost, roomCode, useLegacyId){
 function createRoom(){
   savePlayerName();
   multiplayerMode = 'online-host';
+  multiplayerSession.mode = 'online-host';
   legacyRoomFallbackTried = false;
   multiplayerRoom = makeRoomCode();
   document.getElementById('roomCode').value = multiplayerRoom;
@@ -1733,6 +1801,7 @@ function joinRoom(){
   const code = (document.getElementById('roomCode').value || '').trim().toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,6);
   if(code.length !== 6){ setMultiplayerStatus('Enter a 6-character room code.'); return; }
   multiplayerMode = 'online-guest';
+  multiplayerSession.mode = 'online-guest';
   legacyRoomFallbackTried = false;
   multiplayerRoom = code;
   document.getElementById('roomCode').value = code;
@@ -1742,6 +1811,7 @@ function joinRoom(){
 function selectLocalCoop(){
   savePlayerName();
   multiplayerMode = 'local';
+  multiplayerSession.mode = 'local';
   multiplayerRoom = '';
   document.getElementById('copyInviteBtn').style.display = 'none';
   setMultiplayerStatus('Local co-op selected. Networking is disabled and the single-player loop is unchanged.');
