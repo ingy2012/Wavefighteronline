@@ -1189,19 +1189,80 @@ function makeEnemy(type){
   return grp;
 }
 
+function getRemoteVisualType(state){
+  if(state.style === 'fps') return 'gun';
+  if(state.style === 'melee') return 'melee';
+  return 'magic';
+}
+
+function getRemoteSpellColor(id){
+  const spell = RT_SPELLS.concat(LT_SPELLS).find(candidate=>candidate.id===id);
+  return spell ? spell.color : 0x66d9ff;
+}
+
+function addRemoteWeaponVisual(mesh, style, weaponId, secondaryWeaponId){
+  const rightArm = mesh.userData.rArmGrp;
+  const leftArm = mesh.userData.lArmGrp;
+  if(!rightArm || !leftArm) return;
+  if(style === 'fps') return;
+  rightArm.children.splice(1).forEach(child=>rightArm.remove(child));
+  leftArm.children.splice(1).forEach(child=>leftArm.remove(child));
+
+  if(style === 'magic'){
+    const orbGeometry = new THREE.SphereGeometry(0.18, 8, 8);
+    const rightOrb = new THREE.Mesh(orbGeometry, new THREE.MeshBasicMaterial({color:getRemoteSpellColor(weaponId), transparent:true, opacity:0.9}));
+    const leftOrb = new THREE.Mesh(orbGeometry, new THREE.MeshBasicMaterial({color:getRemoteSpellColor(secondaryWeaponId), transparent:true, opacity:0.9}));
+    rightOrb.position.set(0, -0.6, -0.1);
+    leftOrb.position.set(0, -0.6, -0.1);
+    rightArm.add(rightOrb);
+    leftArm.add(leftOrb);
+    return;
+  }
+  const weaponMaterial = new THREE.MeshStandardMaterial({color:0xd9e2e8, roughness:0.4, metalness:0.6});
+  let weapon;
+  if(weaponId === 'bow'){
+    weapon = new THREE.Mesh(new THREE.TorusGeometry(0.32, 0.035, 6, 16, Math.PI), weaponMaterial);
+    weapon.rotation.set(Math.PI / 2, 0, Math.PI / 2);
+    weapon.position.set(0, -0.45, -0.15);
+  } else if(weaponId === 'spear'){
+    weapon = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 1.35), weaponMaterial);
+    weapon.rotation.x = Math.PI / 2;
+    weapon.position.set(0, -0.55, -0.35);
+  } else if(weaponId === 'claymore'){
+    weapon = new THREE.Mesh(new THREE.BoxGeometry(0.1, 1.25, 0.18), weaponMaterial);
+    weapon.rotation.x = Math.PI / 2;
+    weapon.position.set(0, -0.72, -0.3);
+  } else {
+    weapon = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.9, 0.12), weaponMaterial);
+    weapon.rotation.x = Math.PI / 2;
+    weapon.position.set(0, -0.6, -0.3);
+  }
+  rightArm.add(weapon);
+}
+
 class RemotePlayer {
   constructor(id, initialState){
     this.id = String(id);
-    this.mesh = makeEnemy('magic');
+    this.mesh = null;
+    this.visualKey = '';
+    this.state = { position:{x:0,y:0,z:0}, rotation:{yaw:0,pitch:0}, style:'magic', activeWeapon:'', activeWeaponName:'', secondaryWeapon:'', health:100, maxHealth:100, alive:true, name:'' };
+    this.update(initialState || {});
+  }
+  refreshVisual(){
+    const visualType = getRemoteVisualType(this.state);
+    const visualKey = visualType + ':' + this.state.activeWeapon + ':' + this.state.secondaryWeapon;
+    if(this.mesh && this.visualKey === visualKey) return;
+    if(this.mesh) scene.remove(this.mesh);
+    this.mesh = makeEnemy(visualType);
     this.mesh.userData.remotePlayerId = this.id;
     this.mesh.userData.isRemotePlayer = true;
     this.mesh.userData.parts.forEach(part=>{
-      part.material.color.setHex(0x35e0c0);
-      part.material.emissive.setHex(0x063b38);
+      part.material.color.setHex(0x35e06f);
+      part.material.emissive.setHex(0x063b20);
     });
+    addRemoteWeaponVisual(this.mesh, this.state.style, this.state.activeWeapon, this.state.secondaryWeapon);
     scene.add(this.mesh);
-    this.state = { position:{x:0,y:0,z:0}, rotation:{yaw:0,pitch:0}, activeWeapon:'', health:100, maxHealth:100, alive:true, name:'' };
-    this.update(initialState || {});
+    this.visualKey = visualKey;
   }
   update(nextState){
     if(nextState.position){
@@ -1213,11 +1274,15 @@ class RemotePlayer {
       this.state.rotation.yaw = Number(nextState.rotation.yaw) || 0;
       this.state.rotation.pitch = Number(nextState.rotation.pitch) || 0;
     }
+    if(nextState.style !== undefined) this.state.style = String(nextState.style);
     if(nextState.activeWeapon !== undefined) this.state.activeWeapon = String(nextState.activeWeapon);
+    if(nextState.activeWeaponName !== undefined) this.state.activeWeaponName = String(nextState.activeWeaponName);
+    if(nextState.secondaryWeapon !== undefined) this.state.secondaryWeapon = String(nextState.secondaryWeapon);
     if(nextState.health !== undefined) this.state.health = Math.max(0, Number(nextState.health) || 0);
     if(nextState.maxHealth !== undefined) this.state.maxHealth = Math.max(1, Number(nextState.maxHealth) || 100);
     if(nextState.alive !== undefined) this.state.alive = Boolean(nextState.alive);
     if(nextState.name !== undefined) this.state.name = String(nextState.name).slice(0,18);
+    this.refreshVisual();
     this.mesh.position.set(this.state.position.x, this.state.position.y - EYE_H, this.state.position.z);
     this.mesh.rotation.y = this.state.rotation.yaw;
     this.mesh.visible = this.state.alive;
@@ -1228,14 +1293,17 @@ class RemotePlayer {
       id:this.id,
       position:{...this.state.position},
       rotation:{...this.state.rotation},
+      style:this.state.style,
       activeWeapon:this.state.activeWeapon,
+      activeWeaponName:this.state.activeWeaponName,
+      secondaryWeapon:this.state.secondaryWeapon,
       health:this.state.health,
       maxHealth:this.state.maxHealth,
       alive:this.state.alive,
       name:this.state.name
     };
   }
-  destroy(){ scene.remove(this.mesh); }
+  destroy(){ if(this.mesh) scene.remove(this.mesh); }
 }
 
 const remotePlayers = new Map();
@@ -2601,6 +2669,11 @@ function getActiveWeaponState(){
   return {id:spell.id, name:spell.name, style:player.style};
 }
 
+function getActiveSecondarySpellState(){
+  const spell = getUnlockedLTSpells()[player.ltSpellIndex] || getUnlockedLTSpells()[0];
+  return spell ? {id:spell.id, name:spell.name} : {id:'', name:''};
+}
+
 function getSharedWorldState(){
   return {
     maze:currentMazeData ? JSON.parse(JSON.stringify(currentMazeData)) : null,
@@ -2665,12 +2738,15 @@ function applySharedWorldState(world){
 
 function getGameState(){
   const weapon = getActiveWeaponState();
+  const secondaryWeapon = getActiveSecondarySpellState();
   return {
     player:{
       position:{x:player.pos.x, y:player.pos.y, z:player.pos.z},
       rotation:{yaw:player.yaw, pitch:player.pitch},
       activeWeapon:weapon.id,
       activeWeaponName:weapon.name,
+      secondaryWeapon:secondaryWeapon.id,
+      secondaryWeaponName:secondaryWeapon.name,
       style:weapon.style,
       health:player.hp,
       maxHealth:player.maxHp,
