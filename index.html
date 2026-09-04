@@ -811,6 +811,14 @@ function drawRadar(){
     radarCtx.fillStyle = e.type === 'gun' ? '#c060ff' : (e.type === 'magic' ? '#50a0ff' : '#ff5050');
     radarCtx.fill();
   }
+  for(const remote of remotePlayers.values()){
+    if(!remote.state.alive) continue;
+    const p = worldToRadar(remote.state.position.x, remote.state.position.z);
+    radarCtx.beginPath();
+    radarCtx.arc(p.rx, p.ry, 3.5, 0, Math.PI*2);
+    radarCtx.fillStyle = '#35e0c0';
+    radarCtx.fill();
+  }
   const pp = worldToRadar(player.pos.x, player.pos.z);
   const dirX = -Math.sin(player.yaw), dirZ = -Math.cos(player.yaw);
   const perpX = -dirZ, perpZ = dirX;
