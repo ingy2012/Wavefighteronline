@@ -2747,10 +2747,15 @@ function applySharedWorldState(world){
       enemy = {mesh, networkId:id, hp:enemyState.hp, maxHp:enemyState.maxHp, speed:enemyState.speed,
         type:enemyState.type || 'melee', attackCd:0, alive:true, preferredRange:enemyState.preferredRange || 1.4,
         baseColorHex:enemyState.baseColorHex || 0xdd3b3b, frozenTimer:0, stunTimer:0, dotTimer:0,
-        dotDmg:0, dotAcc:0, slowTimer:0, slowFactor:1};
+        dotDmg:0, dotAcc:0, slowTimer:0, slowFactor:1,
+        networkTarget:new THREE.Vector3(Number(enemyState.x)||0, Number(enemyState.y)||0, Number(enemyState.z)||0)};
       enemies.push(enemy);
     }
-    enemy.mesh.position.set(Number(enemyState.x)||0, Number(enemyState.y)||0, Number(enemyState.z)||0);
+    if(enemy.networkTarget){
+      enemy.networkTarget.set(Number(enemyState.x)||0, Number(enemyState.y)||0, Number(enemyState.z)||0);
+    } else {
+      enemy.networkTarget = enemy.mesh.position.clone();
+    }
     enemy.hp = Number(enemyState.hp) || 0;
     enemy.maxHp = Number(enemyState.maxHp) || enemy.maxHp;
     enemy.speed = Number(enemyState.speed) || enemy.speed;
@@ -2766,6 +2771,14 @@ function applySharedWorldState(world){
       scene.remove(enemies[i].mesh);
       enemies.splice(i,1);
     }
+  }
+}
+
+function updateNetworkEnemyPositions(dt){
+  const smoothing = 1 - Math.exp(-dt * 18);
+  for(const enemy of enemies){
+    if(!enemy.networkTarget) continue;
+    enemy.mesh.position.lerp(enemy.networkTarget, smoothing);
   }
 }
 
@@ -3328,6 +3341,7 @@ function frame(now){
 
     updateLocalPlayer(dt);
     if(multiplayerMode !== 'online-guest') updateEnemies(dt, now);
+    if(multiplayerMode === 'online-guest') updateNetworkEnemyPositions(dt);
     updateProjectiles(dt);
     updateEffects(dt);
     updateShieldVisual(dt);
