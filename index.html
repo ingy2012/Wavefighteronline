@@ -1647,6 +1647,7 @@ let networkPeer = null;
 let networkPeerId = '';
 let networkSendTimer = null;
 let legacyRoomFallbackTried = false;
+let hostPeerId = '';
 const networkConnections = new Map();
 const multiplayerSession = {
   roomCode: '',
@@ -1787,6 +1788,7 @@ function closeNetwork(){
   networkPeerId = '';
   multiplayerSession.roomCode = '';
   lastSharedMazeKey = '';
+  hostPeerId = '';
 }
 function bindNetworkConnection(connection){
   if(!connection) return;
@@ -1865,6 +1867,7 @@ function connectPeerRoom(asHost, roomCode, useLegacyId){
   multiplayerSession.roomCode = normalisedCode;
   multiplayerRoom = normalisedCode;
   const targetPeerId = useLegacyId ? normalisedCode : roomPeerId(normalisedCode);
+  if(!asHost) hostPeerId = targetPeerId;
   setMultiplayerStatus(asHost ? 'Creating room ' + normalisedCode + '…' : 'Connecting to room ' + normalisedCode + '…');
   networkPeer = asHost ? new Peer(roomPeerId(normalisedCode)) : new Peer();
   networkPeer.on('open', id=>{
@@ -2799,13 +2802,13 @@ function getGameState(){
       alive:player.alive
     },
     game:{wave:state.wave, score:state.score, enemiesRemaining:state.enemiesRemaining, betweenWaves:state.betweenWaves, gameMode:gameMode},
-    world:getSharedWorldState()
+    world: multiplayerMode === 'online-guest' ? null : getSharedWorldState()
   };
 }
 
 function applyRemoteState(remoteState){
   if(!remoteState || remoteState.id === undefined || remoteState.id === null) return false;
-  if(remoteState.world && multiplayerMode === 'online-guest') applySharedWorldState(Object.assign({}, remoteState.world, remoteState.game || {}));
+  if(remoteState.world && multiplayerMode === 'online-guest' && hostPeerId && String(remoteState.id) === hostPeerId) applySharedWorldState(Object.assign({}, remoteState.world, remoteState.game || {}));
   const incoming = remoteState.player ? Object.assign({}, remoteState.player, {id:remoteState.id}) : remoteState;
   const id = String(incoming.id);
   if(incoming.remove || incoming.alive === false && incoming.position === undefined){
