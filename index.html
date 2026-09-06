@@ -1542,18 +1542,50 @@ function firePoisonBolt(){
     onHit:(e)=>{ e.dotTimer=spell.dot.time; e.dotDmg=dotDmg; e.dotAcc=0; e.slowTimer=spell.slow.time; e.slowFactor=slowFactor; }});
 }
 
-function fireEnemyBullet(e){
-  const dir = player.pos.clone().sub(e.mesh.position).setY(0).normalize();
+function getEnemyTargets(){
+  const targets = [];
+  if(player.alive) targets.push({id:'local', position:player.pos, remote:null});
+  for(const remote of remotePlayers.values()){
+    if(remote.state.alive) targets.push({id:remote.id, position:new THREE.Vector3(remote.state.position.x, remote.state.position.y, remote.state.position.z), remote});
+  }
+  return targets;
+}
+
+function damageEnemyTarget(target, amount){
+  if(!target || !target.remote){
+    if(player.shieldTimer > 0){
+      flashScreen('120,220,255',0.15);
+      return;
+    }
+    let damage = amount;
+    if(player.blocking) damage *= 0.3;
+    player.hp = Math.max(0, player.hp - damage);
+    flashScreen('255,40,40',0.22);
+    return;
+  }
+  const remote = target.remote;
+  const damage = amount;
+  remote.state.health = Math.max(0, remote.state.health - damage);
+  remote.state.alive = remote.state.health > 0;
+  remote.mesh.visible = remote.state.alive;
+  const connection = networkConnections.get(remote.id);
+  if(connection && connection.open){
+    try { connection.send({type:'player-damage', targetId:remote.id, amount:damage, health:remote.state.health, alive:remote.state.alive}); } catch(err) {}
+  }
+}
+
+function fireEnemyBullet(e, target){
+  const dir = target.position.clone().sub(e.mesh.position).setY(0).normalize();
   const mesh = new THREE.Mesh(geoEnemyBullet, matEnemyBullet);
   // Spawn bullet perfectly aligned with the gun barrel extending from the shoulder pivot
   mesh.position.copy(e.mesh.position).add(new THREE.Vector3(0.35,1.3,0)).add(dir.clone().multiplyScalar(0.8));
-  spawnProjectile({mesh, vel:dir.clone().multiplyScalar(32), dmg:7, friendly:false, life:3.5, splash:0});
+  spawnProjectile({mesh, vel:dir.clone().multiplyScalar(32), dmg:7, friendly:false, life:3.5, splash:0, targetId:target.id});
 }
-function fireEnemySpell(e){
-  const dir = player.pos.clone().sub(e.mesh.position).setY(0).normalize();
+function fireEnemySpell(e, target){
+  const dir = target.position.clone().sub(e.mesh.position).setY(0).normalize();
   const mesh = new THREE.Mesh(geoEnemySpell, matEnemySpell);
   mesh.position.copy(e.mesh.position).add(new THREE.Vector3(0.35,1.3,0)).add(dir.clone().multiplyScalar(0.8));
-  spawnProjectile({mesh, vel:dir.clone().multiplyScalar(14), dmg:15, friendly:false, life:5, splash:0});
+  spawnProjectile({mesh, vel:dir.clone().multiplyScalar(14), dmg:15, friendly:false, life:5, splash:0, targetId:target.id});
 }
 
 function fireLightningCharged(frac){
@@ -1823,12 +1855,22 @@ function bindNetworkConnection(connection){
       setMultiplayerStatus('Peer handshake complete for room ' + (multiplayerSession.roomCode || multiplayerRoom || 'online') + '.');
       return;
     }
+    if(data.type === 'player-damage'){
+      if(String(data.targetId) === String(networkPeerId || networkPeer.id)){
+        player.hp = Math.max(0, Number(data.health) || 0);
+        player.alive = data.alive !== false && player.hp > 0;
+        flashScreen('255,40,40',0.22);
+      }
+      return;
+    }
     if(data.type === 'state-sync'){
       const payload = data.payload || data;
       const packetId = String(data.id || payload.id || connection.peer || '');
       if(!packetId || packetId === String(networkPeerId || networkPeer.id)) return;
       if(data.room && multiplayerSession.roomCode && data.room !== multiplayerSession.roomCode) return;
-      window.applyRemoteState(Object.assign({}, payload, {id: packetId}));
+      const incomingPayload = multiplayerMode === 'online-host' && remotePlayers.has(packetId) ?
+        Object.assign({}, payload, {health:remotePlayers.get(packetId).state.health, alive:remotePlayers.get(packetId).state.alive}) : payload;
+      window.applyRemoteState(Object.assign({}, incomingPayload, {id: packetId}));
       if(multiplayerMode === 'online-host'){
         for(const other of networkConnections.values()){
           if(other !== connection && other.open) {
@@ -2485,7 +2527,14 @@ function updateEnemies(dt, now){
     
     if(!e.alive) continue;
     const disabled = e.frozenTimer>0 || e.stunTimer>0;
-    const dist = player.pos.clone().setY(0).distanceTo(e.mesh.position.clone().setY(0));
+    const targets = getEnemyTargets();
+    if(!targets.length) continue;
+    const target = targets.reduce((closest, candidate)=>{
+      const distance = candidate.position.distanceTo(e.mesh.position);
+      return !closest || distance < closest.distance ? {player:candidate, distance} : closest;
+    }, null);
+    const targetPlayer = target.player;
+    const dist = target.distance;
     
     // --- ANIMATION CONTROLS ---
     const rArm = e.mesh.userData.rArmGrp;
@@ -2500,7 +2549,7 @@ function updateEnemies(dt, now){
 
     if(!disabled){
       const spd = e.speed * (e.slowTimer>0 ? e.slowFactor : 1);
-      const toPlayer = player.pos.clone().setY(0).sub(e.mesh.position.clone().setY(0));
+      const toPlayer = targetPlayer.position.clone().setY(0).sub(e.mesh.position.clone().setY(0));
       e.attackCd -= dt;
       
       if(e.type === 'gun' || e.type === 'magic'){
@@ -2521,7 +2570,7 @@ function updateEnemies(dt, now){
             if (e.attackCd > 1.0) targetRArmX -= 0.4; // Recoil tick
           }
           if(e.attackCd<=0 && e.slowTimer<=0 && dist < 25){
-             fireEnemyBullet(e); 
+             fireEnemyBullet(e, targetPlayer);
              e.attackCd = 1.2; 
           }
         } 
@@ -2536,7 +2585,7 @@ function updateEnemies(dt, now){
              }
           }
           if(e.attackCd<=0 && e.slowTimer<=0 && dist < 25){
-             fireEnemySpell(e); 
+             fireEnemySpell(e, targetPlayer);
              e.attackCd = 2.5; 
           }
         }
@@ -2547,14 +2596,7 @@ function updateEnemies(dt, now){
           e.mesh.position.addScaledVector(toPlayer, spd*dt); 
           isMoving = true; 
         } else if(e.attackCd<=0 && e.slowTimer<=0){
-          if(player.shieldTimer > 0){
-            flashScreen('120,220,255',0.15);
-          } else {
-            let dmg = 9;
-            if(player.blocking) dmg *= 0.3;
-            player.hp -= dmg;
-            flashScreen('255,40,40',0.22);
-          }
+          damageEnemyTarget(targetPlayer, 9);
           e.attackCd = 0.9;
         }
         
@@ -2581,7 +2623,7 @@ function updateEnemies(dt, now){
       lLeg.rotation.x *= 0.8;
     }
     
-    e.mesh.lookAt(player.pos.x, e.mesh.position.y, player.pos.z);
+    e.mesh.lookAt(targetPlayer.position.x, e.mesh.position.y, targetPlayer.position.z);
     
     const colHex = e.frozenTimer>0 ? 0x2a6fdd : (e.dotTimer>0 ? 0x66ff66 : (e.slowTimer>0 ? 0xaee8ff : e.baseColorHex));
     for(const part of e.mesh.userData.parts){
@@ -2617,15 +2659,13 @@ function updateProjectiles(dt){
         }
       }
     } else if(!remove){
-      if(p.mesh.position.distanceTo(player.pos) < 1.0){
-        if(player.shieldTimer > 0){
-          flashScreen('120,220,255',0.15);
-        } else {
-          let dmg = p.dmg;
-          if(player.blocking) dmg *= 0.3;
-          player.hp -= dmg;
-          flashScreen('180,60,255',0.2);
-        }
+      const remoteTarget = p.targetId && remotePlayers.get(String(p.targetId));
+      const remotePosition = remoteTarget ? new THREE.Vector3(remoteTarget.state.position.x, remoteTarget.state.position.y, remoteTarget.state.position.z) : null;
+      if(remoteTarget && remoteTarget.state.alive && p.mesh.position.distanceTo(remotePosition) < 1.0){
+        damageEnemyTarget({remote:remoteTarget}, p.dmg);
+        remove = true;
+      } else if(p.targetId === 'local' && p.mesh.position.distanceTo(player.pos) < 1.0){
+        damageEnemyTarget({remote:null}, p.dmg);
         remove = true;
       }
     }
