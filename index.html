@@ -1424,7 +1424,8 @@ function updateShieldVisual(dt){
 }
 const geoArrow = new THREE.ConeGeometry(0.06,0.6,6);
 const geoBall = new THREE.SphereGeometry(0.22,8,8);
-const geoRocket = new THREE.CylinderGeometry(0.1,0.1,0.5,8);
+const geoRocket = new THREE.CylinderGeometry(0.18,0.14,0.9,10);
+const geoFlame = new THREE.SphereGeometry(0.16,6,6);
 
 const geoEnemyBullet = new THREE.SphereGeometry(0.08, 4, 4);
 const matEnemyBullet = new THREE.MeshBasicMaterial({color:0xffcc00});
@@ -1432,6 +1433,26 @@ const geoEnemySpell = new THREE.SphereGeometry(0.18, 8, 8);
 const matEnemySpell = new THREE.MeshBasicMaterial({color:0x66d9ff});
 
 function spawnProjectile(opts){ scene.add(opts.mesh); projectiles.push(opts); }
+
+function spawnExplosion(position){
+  const mesh = new THREE.Mesh(
+    new THREE.SphereGeometry(0.45, 12, 8),
+    new THREE.MeshBasicMaterial({color:0xff7a22, transparent:true, opacity:0.85})
+  );
+  mesh.position.copy(position);
+  scene.add(mesh);
+  effects.push({mesh, life:0.32, maxLife:0.32, isExplosion:true});
+}
+
+function spawnFlameParticle(position, direction){
+  const mesh = new THREE.Mesh(
+    geoFlame,
+    new THREE.MeshBasicMaterial({color:Math.random() > 0.35 ? 0xff6a18 : 0xffd447, transparent:true, opacity:0.9})
+  );
+  mesh.position.copy(position);
+  scene.add(mesh);
+  effects.push({mesh, vel:direction.clone().multiplyScalar(15 + Math.random()*10), life:0.16 + Math.random()*0.12, maxLife:0.28, isFlame:true});
+}
 
 function fireArrow(damage){
   const unlocked = getUnlockedArrows();
@@ -1453,10 +1474,14 @@ function fireRocket(){
   const mesh = new THREE.Mesh(geoRocket, mat);
   mesh.position.copy(player.pos).add(dir.clone().multiplyScalar(0.6));
   mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), dir);
-  spawnProjectile({mesh, vel:dir.clone().multiplyScalar(32), dmg:65, friendly:true, life:3.5, splash:5.0});
+  spawnProjectile({mesh, vel:dir.clone().multiplyScalar(32), dmg:65, friendly:true, life:3.5, splash:5.0, explosive:true});
 }
 function fireFlameStream(){
   const dir = getForward();
+  for(let i=0;i<3;i++){
+    const spread = new THREE.Vector3((Math.random()-0.5)*0.18, (Math.random()-0.5)*0.18, (Math.random()-0.5)*0.18);
+    spawnFlameParticle(player.pos.clone().add(dir.clone().multiplyScalar(0.55 + Math.random()*0.25)), dir.clone().add(spread).normalize());
+  }
   raycaster.set(player.pos.clone(), dir);
   raycaster.far = 12;
   const enemyPartMeshes = [];
@@ -1594,8 +1619,12 @@ function updateEffects(dt){
     const t = 1-(fx.life/fx.maxLife);
     if(fx.isBeam){
       fx.mesh.material.opacity = 0.9*(1-t);
+    } else if(fx.isFlame){
+      fx.mesh.position.addScaledVector(fx.vel, dt);
+      fx.mesh.scale.setScalar(1-t*0.8);
+      fx.mesh.material.opacity = 0.9*(1-t);
     } else {
-      fx.mesh.scale.setScalar(1+t*7);
+      fx.mesh.scale.setScalar(fx.isExplosion ? 1+t*5 : 1+t*7);
       fx.mesh.material.opacity = 0.8*(1-t);
     }
     if(fx.life<=0){ scene.remove(fx.mesh); effects.splice(i,1); }
@@ -1618,6 +1647,7 @@ let networkPeer = null;
 let networkPeerId = '';
 let networkSendTimer = null;
 let legacyRoomFallbackTried = false;
+let hostPeerId = '';
 const networkConnections = new Map();
 const multiplayerSession = {
   roomCode: '',
@@ -1758,6 +1788,7 @@ function closeNetwork(){
   networkPeerId = '';
   multiplayerSession.roomCode = '';
   lastSharedMazeKey = '';
+  hostPeerId = '';
 }
 function bindNetworkConnection(connection){
   if(!connection) return;
@@ -1836,6 +1867,7 @@ function connectPeerRoom(asHost, roomCode, useLegacyId){
   multiplayerSession.roomCode = normalisedCode;
   multiplayerRoom = normalisedCode;
   const targetPeerId = useLegacyId ? normalisedCode : roomPeerId(normalisedCode);
+  if(!asHost) hostPeerId = targetPeerId;
   setMultiplayerStatus(asHost ? 'Creating room ' + normalisedCode + '…' : 'Connecting to room ' + normalisedCode + '…');
   networkPeer = asHost ? new Peer(roomPeerId(normalisedCode)) : new Peer();
   networkPeer.on('open', id=>{
@@ -2564,7 +2596,8 @@ function updateProjectiles(dt){
     p.life -= dt;
     p.mesh.position.addScaledVector(p.vel, dt);
     let remove = p.life<=0;
-    if(!remove && isInsideWall(p.mesh.position, 0.2)) remove = true;
+    let impact = false;
+    if(!remove && isInsideWall(p.mesh.position, 0.2)){ remove = true; impact = true; }
     if(!remove && p.friendly){
       for(const e of enemies){
         if(!e.alive) continue;
@@ -2580,7 +2613,7 @@ function updateProjectiles(dt){
               }
             }
           }
-          remove = true; break;
+          remove = true; impact = true; break;
         }
       }
     } else if(!remove){
@@ -2596,7 +2629,10 @@ function updateProjectiles(dt){
         remove = true;
       }
     }
-    if(remove){ scene.remove(p.mesh); projectiles.splice(i,1); }
+    if(remove){
+      if(p.explosive && impact) spawnExplosion(p.mesh.position);
+      scene.remove(p.mesh); projectiles.splice(i,1);
+    }
   }
 }
 
@@ -2714,10 +2750,15 @@ function applySharedWorldState(world){
       enemy = {mesh, networkId:id, hp:enemyState.hp, maxHp:enemyState.maxHp, speed:enemyState.speed,
         type:enemyState.type || 'melee', attackCd:0, alive:true, preferredRange:enemyState.preferredRange || 1.4,
         baseColorHex:enemyState.baseColorHex || 0xdd3b3b, frozenTimer:0, stunTimer:0, dotTimer:0,
-        dotDmg:0, dotAcc:0, slowTimer:0, slowFactor:1};
+        dotDmg:0, dotAcc:0, slowTimer:0, slowFactor:1,
+        networkTarget:new THREE.Vector3(Number(enemyState.x)||0, Number(enemyState.y)||0, Number(enemyState.z)||0)};
       enemies.push(enemy);
     }
-    enemy.mesh.position.set(Number(enemyState.x)||0, Number(enemyState.y)||0, Number(enemyState.z)||0);
+    if(enemy.networkTarget){
+      enemy.networkTarget.set(Number(enemyState.x)||0, Number(enemyState.y)||0, Number(enemyState.z)||0);
+    } else {
+      enemy.networkTarget = enemy.mesh.position.clone();
+    }
     enemy.hp = Number(enemyState.hp) || 0;
     enemy.maxHp = Number(enemyState.maxHp) || enemy.maxHp;
     enemy.speed = Number(enemyState.speed) || enemy.speed;
@@ -2733,6 +2774,14 @@ function applySharedWorldState(world){
       scene.remove(enemies[i].mesh);
       enemies.splice(i,1);
     }
+  }
+}
+
+function updateNetworkEnemyPositions(dt){
+  const smoothing = 1 - Math.exp(-dt * 18);
+  for(const enemy of enemies){
+    if(!enemy.networkTarget) continue;
+    enemy.mesh.position.lerp(enemy.networkTarget, smoothing);
   }
 }
 
@@ -2753,13 +2802,13 @@ function getGameState(){
       alive:player.alive
     },
     game:{wave:state.wave, score:state.score, enemiesRemaining:state.enemiesRemaining, betweenWaves:state.betweenWaves, gameMode:gameMode},
-    world:getSharedWorldState()
+    world: multiplayerMode === 'online-guest' ? null : getSharedWorldState()
   };
 }
 
 function applyRemoteState(remoteState){
   if(!remoteState || remoteState.id === undefined || remoteState.id === null) return false;
-  if(remoteState.world && multiplayerMode === 'online-guest') applySharedWorldState(Object.assign({}, remoteState.world, remoteState.game || {}));
+  if(remoteState.world && multiplayerMode === 'online-guest' && hostPeerId && String(remoteState.id) === hostPeerId) applySharedWorldState(Object.assign({}, remoteState.world, remoteState.game || {}));
   const incoming = remoteState.player ? Object.assign({}, remoteState.player, {id:remoteState.id}) : remoteState;
   const id = String(incoming.id);
   if(incoming.remove || incoming.alive === false && incoming.position === undefined){
@@ -3295,6 +3344,7 @@ function frame(now){
 
     updateLocalPlayer(dt);
     if(multiplayerMode !== 'online-guest') updateEnemies(dt, now);
+    if(multiplayerMode === 'online-guest') updateNetworkEnemyPositions(dt);
     updateProjectiles(dt);
     updateEffects(dt);
     updateShieldVisual(dt);
