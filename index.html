@@ -1578,9 +1578,11 @@ function damageEnemyTarget(target, amount){
   remote.state.health = Math.max(0, remote.state.health - damage);
   remote.state.alive = remote.state.health > 0;
   remote.mesh.visible = remote.state.alive;
-  const connection = networkConnections.get(remote.id);
-  if(connection && connection.open){
-    try { connection.send({type:'player-damage', targetId:remote.id, amount:damage, health:remote.state.health, alive:remote.state.alive}); } catch(err) {}
+  const damagePacket = {type:'player-damage', targetId:remote.id, amount:damage, health:remote.state.health, alive:remote.state.alive};
+  for(const connection of networkConnections.values()){
+    if(connection && connection.open){
+      try { connection.send(damagePacket); } catch(err) {}
+    }
   }
 }
 
