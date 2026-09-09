@@ -1561,7 +1561,7 @@ function getEnemyTargets(){
 }
 
 function damageEnemyTarget(target, amount){
-  if(!target || !target.remote){
+  if(target && target.id === 'local'){
     if(player.shieldTimer > 0){
       flashScreen('120,220,255',0.15);
       return;
@@ -1572,6 +1572,7 @@ function damageEnemyTarget(target, amount){
     flashScreen('255,40,40',0.22);
     return;
   }
+  if(!target || !target.remote) return;
   const remote = target.remote;
   const damage = amount;
   remote.state.health = Math.max(0, remote.state.health - damage);
@@ -2764,10 +2765,10 @@ function updateProjectiles(dt){
       const remoteTarget = p.targetId && remotePlayers.get(String(p.targetId));
       const remotePosition = remoteTarget ? new THREE.Vector3(remoteTarget.state.position.x, remoteTarget.state.position.y, remoteTarget.state.position.z) : null;
       if(remoteTarget && remoteTarget.state.alive && p.mesh.position.distanceTo(remotePosition) < 1.0){
-        damageEnemyTarget({remote:remoteTarget}, p.dmg);
+        damageEnemyTarget({id:remoteTarget.id, remote:remoteTarget}, p.dmg);
         remove = true;
       } else if(p.targetId === 'local' && p.mesh.position.distanceTo(player.pos) < 1.0){
-        damageEnemyTarget({remote:null}, p.dmg);
+        damageEnemyTarget({id:'local'}, p.dmg);
         remove = true;
       }
     }
