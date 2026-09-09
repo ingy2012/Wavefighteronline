@@ -320,7 +320,7 @@
 <div class="overlay hidden" id="deathOverlay">
   <h1 style="background:linear-gradient(90deg,#ff3b3b,#8a1a1a);-webkit-background-clip:text;background-clip:text;">YOU FELL</h1>
   <h2 id="deathWaveText">You reached wave 1</h2>
-  <button class="big" id="retryBtn">TRY AGAIN</button>
+  <button class="big" id="retryBtn">RESPAWN</button>
 </div>
 
 <div class="overlay hidden" id="pauseOverlay">
@@ -3277,6 +3277,38 @@ function die(){
   document.getElementById('deathOverlay').classList.remove('hidden');
 }
 
+function respawnPlayer(){
+  let spawnPoint = null;
+  for(let tries=0; tries<30; tries++){
+    const candidate = validEdgePoint();
+    const clearOfEnemies = enemies.every(enemy=>!enemy.alive || enemy.mesh.position.distanceTo(new THREE.Vector3(candidate.x, 0, candidate.z)) > 5);
+    if(clearOfEnemies){ spawnPoint = candidate; break; }
+  }
+  if(!spawnPoint) spawnPoint = validEdgePoint();
+
+  player.pos.set(spawnPoint.x, EYE_H, spawnPoint.z);
+  player.vy = 0;
+  player.grounded = true;
+  player.hp = player.maxHp;
+  player.mana = player.maxMana;
+  player.stamina = player.maxStamina;
+  player.alive = true;
+  player.blocking = false;
+  player.charging = false;
+  player.chargeT = 0;
+  player.shieldTimer = 0;
+  player.cooldowns.primary = 0;
+  player.cooldowns.secondary = 0;
+  player.cooldowns.shout = 0;
+  player.reloading = false;
+  player.reloadTimer = 0;
+  player.reloadingWeapon = null;
+  document.getElementById('deathOverlay').classList.add('hidden');
+  camera.position.copy(player.pos);
+  if(!touchControlsEnabled && canvas.requestPointerLock) canvas.requestPointerLock();
+  showMsg('RESPAWNED');
+}
+
 function togglePause(){
   if(!gameStarted || !player.alive || !document.getElementById('shopOverlay').classList.contains('hidden')) return;
   paused = !paused;
@@ -3561,7 +3593,7 @@ document.getElementById('startBtn').addEventListener('click', ()=>{
   enterArena(false);
 });
 document.getElementById('retryBtn').addEventListener('click', ()=>{
-  location.reload();
+  respawnPlayer();
 });
 document.getElementById('resumeBtn').addEventListener('click', ()=>{
   togglePause();
