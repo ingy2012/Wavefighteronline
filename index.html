@@ -1375,6 +1375,14 @@ function spawnWaveEnemies(){
 
 function damageEnemy(e, baseDmg, hitPartType){
   if(!e.alive) return;
+  if(multiplayerMode === 'online-guest'){
+    const connection = networkConnections.values().next().value;
+    if(connection && connection.open){
+      try {
+        connection.send({type:'enemy-damage', enemyId:e.networkId, amount:baseDmg, hitPartType:hitPartType || 'body'});
+      } catch(err) {}
+    }
+  }
   let multiplier = 1.0;
   if(hitPartType === 'head') { multiplier = 2.0; showMsg('HEADSHOT! 2x'); }
   else if(hitPartType === 'limb') { multiplier = 0.6; }
@@ -1937,6 +1945,16 @@ function bindNetworkConnection(connection){
         player.hp = Math.max(0, Number(data.health) || 0);
         player.alive = data.alive !== false && player.hp > 0;
         flashScreen('255,40,40',0.22);
+      }
+      return;
+    }
+    if(data.type === 'enemy-damage'){
+      if(multiplayerMode === 'online-host'){
+        const enemy = enemies.find(candidate=>candidate.networkId === String(data.enemyId));
+        const amount = Number(data.amount);
+        if(enemy && Number.isFinite(amount) && amount > 0){
+          damageEnemy(enemy, amount, data.hitPartType || 'body');
+        }
       }
       return;
     }
