@@ -2696,7 +2696,8 @@ function updateEnemies(dt, now){
         }
       } else { 
         // Melee logic
-        if(dist > 1.3){ 
+        const meleeDist = targetPlayer.position.clone().setY(0).distanceTo(e.mesh.position.clone().setY(0));
+        if(meleeDist > 1.3){
           toPlayer.normalize(); 
           e.mesh.position.addScaledVector(toPlayer, spd*dt); 
           isMoving = true; 
