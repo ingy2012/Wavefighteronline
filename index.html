@@ -313,13 +313,14 @@
       <div id="shopMagicList"></div>
     </div>
   </div>
-  <button class="big" id="nextWaveBtn" style="margin-top:6px;">START NEXT WAVE</button>
+  <div id="roundReadyStatus" style="font-size:12px;opacity:.78;margin-top:4px;min-height:18px;"></div>
+  <button class="big" id="nextWaveBtn" style="margin-top:6px;">READY FOR NEXT WAVE</button>
 </div>
 
 <div class="overlay hidden" id="deathOverlay">
   <h1 style="background:linear-gradient(90deg,#ff3b3b,#8a1a1a);-webkit-background-clip:text;background-clip:text;">YOU FELL</h1>
   <h2 id="deathWaveText">You reached wave 1</h2>
-  <button class="big" id="retryBtn">TRY AGAIN</button>
+  <button class="big" id="retryBtn">RESPAWN</button>
 </div>
 
 <div class="overlay hidden" id="pauseOverlay">
@@ -1374,6 +1375,14 @@ function spawnWaveEnemies(){
 
 function damageEnemy(e, baseDmg, hitPartType){
   if(!e.alive) return;
+  if(multiplayerMode === 'online-guest'){
+    const connection = networkConnections.values().next().value;
+    if(connection && connection.open){
+      try {
+        connection.send({type:'enemy-damage', enemyId:e.networkId, amount:baseDmg, hitPartType:hitPartType || 'body'});
+      } catch(err) {}
+    }
+  }
   let multiplier = 1.0;
   if(hitPartType === 'head') { multiplier = 2.0; showMsg('HEADSHOT! 2x'); }
   else if(hitPartType === 'limb') { multiplier = 0.6; }
@@ -1552,7 +1561,7 @@ function getEnemyTargets(){
 }
 
 function damageEnemyTarget(target, amount){
-  if(!target || !target.remote){
+  if(target && target.id === 'local'){
     if(player.shieldTimer > 0){
       flashScreen('120,220,255',0.15);
       return;
@@ -1563,14 +1572,17 @@ function damageEnemyTarget(target, amount){
     flashScreen('255,40,40',0.22);
     return;
   }
+  if(!target || !target.remote) return;
   const remote = target.remote;
   const damage = amount;
   remote.state.health = Math.max(0, remote.state.health - damage);
   remote.state.alive = remote.state.health > 0;
   remote.mesh.visible = remote.state.alive;
-  const connection = networkConnections.get(remote.id);
-  if(connection && connection.open){
-    try { connection.send({type:'player-damage', targetId:remote.id, amount:damage, health:remote.state.health, alive:remote.state.alive}); } catch(err) {}
+  const damagePacket = {type:'player-damage', targetId:remote.id, amount:damage, health:remote.state.health, alive:remote.state.alive};
+  for(const connection of networkConnections.values()){
+    if(connection && connection.open){
+      try { connection.send(damagePacket); } catch(err) {}
+    }
   }
 }
 
@@ -1680,6 +1692,10 @@ let networkPeerId = '';
 let networkSendTimer = null;
 let legacyRoomFallbackTried = false;
 let hostPeerId = '';
+let roundReady = false;
+let roundReadyTotal = 1;
+let hostRoundReady = false;
+const remoteRoundReady = new Set();
 const networkConnections = new Map();
 const multiplayerSession = {
   roomCode: '',
@@ -1767,6 +1783,52 @@ function setMultiplayerStatus(text){
   const status = document.getElementById('multiplayerStatus');
   if(status) status.textContent = text;
 }
+function updateRoundReadyUI(){
+  const button = document.getElementById('nextWaveBtn');
+  const status = document.getElementById('roundReadyStatus');
+  if(!button || !status) return;
+  if(multiplayerMode === 'solo' || multiplayerMode === 'local'){
+    button.textContent = 'START NEXT WAVE';
+    status.textContent = 'Upgrade your loadout, then continue when ready.';
+    return;
+  }
+  button.textContent = roundReady ? 'READY - WAITING' : 'READY FOR NEXT WAVE';
+  button.disabled = roundReady;
+  button.style.opacity = roundReady ? '0.65' : '1';
+  const totalPlayers = multiplayerMode === 'online-host' ? 1 + networkConnections.size : roundReadyTotal;
+  const readyPlayers = (roundReady ? 1 : 0) + (multiplayerMode === 'online-guest' && hostRoundReady ? 1 : 0) + remoteRoundReady.size;
+  status.textContent = readyPlayers + ' / ' + totalPlayers + ' players ready.';
+}
+function broadcastRoundReady(){
+  const packet = {type:'round-ready', id:networkPeerId || (networkPeer && networkPeer.id), ready:roundReady};
+  for(const connection of networkConnections.values()){
+    if(connection && connection.open){ try { connection.send(packet); } catch(err) {} }
+  }
+}
+function beginNextWaveIfReady(){
+  if(multiplayerMode !== 'online-host') return;
+  const everyoneReady = roundReady && [...networkConnections.keys()].every(id=>remoteRoundReady.has(String(id)));
+  if(everyoneReady){
+    document.getElementById('shopOverlay').classList.add('hidden');
+    startWave();
+  }
+}
+function setRoundReady(){
+  if(roundReady) return;
+  roundReady = true;
+  updateRoundReadyUI();
+  if(multiplayerMode === 'online-host'){
+    broadcastRoundReady();
+    beginNextWaveIfReady();
+  } else if(multiplayerMode === 'online-guest'){
+    for(const connection of networkConnections.values()){
+      if(connection && connection.open){ try { connection.send({type:'round-ready', id:networkPeerId || networkPeer.id, ready:true}); } catch(err) {} }
+    }
+  } else {
+    document.getElementById('shopOverlay').classList.add('hidden');
+    startWave();
+  }
+}
 function makeRoomCode(){
   const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let code = '';
@@ -1821,6 +1883,11 @@ function closeNetwork(){
   multiplayerSession.roomCode = '';
   lastSharedMazeKey = '';
   hostPeerId = '';
+  roundReady = false;
+  hostRoundReady = false;
+  roundReadyTotal = 1;
+  remoteRoundReady.clear();
+  updateRoundReadyUI();
 }
 function bindNetworkConnection(connection){
   if(!connection) return;
@@ -1855,11 +1922,42 @@ function bindNetworkConnection(connection){
       setMultiplayerStatus('Peer handshake complete for room ' + (multiplayerSession.roomCode || multiplayerRoom || 'online') + '.');
       return;
     }
+    if(data.type === 'round-ready'){
+      if(multiplayerMode === 'online-host'){
+        const readyId = String(connection.peer);
+        if(data.ready) remoteRoundReady.add(readyId); else remoteRoundReady.delete(readyId);
+        const readyStatus = {type:'round-ready-status', readyIds:[...remoteRoundReady], hostReady:roundReady, total:1 + networkConnections.size};
+        for(const other of networkConnections.values()){
+          if(other && other.open){ try { other.send(readyStatus); } catch(err) {} }
+        }
+        updateRoundReadyUI();
+        beginNextWaveIfReady();
+      }
+      return;
+    }
+    if(data.type === 'round-ready-status'){
+      remoteRoundReady.clear();
+      (data.readyIds || []).forEach(id=>remoteRoundReady.add(String(id)));
+      hostRoundReady = data.hostReady === true;
+      roundReadyTotal = Math.max(1, Number(data.total) || 1);
+      updateRoundReadyUI();
+      return;
+    }
     if(data.type === 'player-damage'){
       if(String(data.targetId) === String(networkPeerId || networkPeer.id)){
         player.hp = Math.max(0, Number(data.health) || 0);
         player.alive = data.alive !== false && player.hp > 0;
         flashScreen('255,40,40',0.22);
+      }
+      return;
+    }
+    if(data.type === 'enemy-damage'){
+      if(multiplayerMode === 'online-host'){
+        const enemy = enemies.find(candidate=>candidate.networkId === String(data.enemyId));
+        const amount = Number(data.amount);
+        if(enemy && Number.isFinite(amount) && amount > 0){
+          damageEnemy(enemy, amount, data.hitPartType || 'body');
+        }
       }
       return;
     }
@@ -1890,11 +1988,18 @@ function bindNetworkConnection(connection){
   });
   connection.on('close', ()=>{
     networkConnections.delete(connection.peer);
+    remoteRoundReady.delete(String(connection.peer));
+    hostRoundReady = false;
+    roundReadyTotal = Math.max(1, networkConnections.size + (multiplayerMode === 'online-guest' ? 1 : 1));
+    updateRoundReadyUI();
+    beginNextWaveIfReady();
     window.removeRemotePlayer(connection.peer);
     setMultiplayerStatus('Player disconnected. Waiting for another connection.');
   });
   connection.on('error', ()=>{
     networkConnections.delete(connection.peer);
+    remoteRoundReady.delete(String(connection.peer));
+    updateRoundReadyUI();
     window.removeRemotePlayer(connection.peer);
     setMultiplayerStatus('Connection to ' + connection.peer + ' failed.');
   });
@@ -2663,10 +2768,10 @@ function updateProjectiles(dt){
       const remoteTarget = p.targetId && remotePlayers.get(String(p.targetId));
       const remotePosition = remoteTarget ? new THREE.Vector3(remoteTarget.state.position.x, remoteTarget.state.position.y, remoteTarget.state.position.z) : null;
       if(remoteTarget && remoteTarget.state.alive && p.mesh.position.distanceTo(remotePosition) < 1.0){
-        damageEnemyTarget({remote:remoteTarget}, p.dmg);
+        damageEnemyTarget({id:remoteTarget.id, remote:remoteTarget}, p.dmg);
         remove = true;
       } else if(p.targetId === 'local' && p.mesh.position.distanceTo(player.pos) < 1.0){
-        damageEnemyTarget({remote:null}, p.dmg);
+        damageEnemyTarget({id:'local'}, p.dmg);
         remove = true;
       }
     }
@@ -2769,6 +2874,7 @@ function getSharedWorldState(){
 let lastSharedMazeKey = '';
 function applySharedWorldState(world){
   if(!world || !Array.isArray(world.enemies)) return;
+  const wasBetweenWaves = state.betweenWaves;
   const mazeKey = JSON.stringify(world.maze || null);
   if(world.maze && mazeKey !== lastSharedMazeKey){
     generateInteriorMaze(world.maze);
@@ -2780,6 +2886,14 @@ function applySharedWorldState(world){
   if(!Number.isFinite(state.enemiesRemaining)) state.enemiesRemaining = world.enemies.filter(enemy=>enemy.alive).length;
   state.betweenWaves = Boolean(world.betweenWaves);
   if(world.gameMode && world.gameMode !== gameMode) setGameMode(world.gameMode);
+  if(multiplayerMode === 'online-guest'){
+    if(state.betweenWaves && !wasBetweenWaves) openShop();
+    else if(!state.betweenWaves && wasBetweenWaves){
+      roundReady = false;
+      document.getElementById('shopOverlay').classList.add('hidden');
+      if(!touchControlsEnabled && canvas.requestPointerLock) canvas.requestPointerLock();
+    }
+  }
   const incomingIds = new Set();
   for(const enemyState of world.enemies){
     const id = String(enemyState.id);
@@ -2993,8 +3107,13 @@ function updateViewmodelAnimations(now) {
 /* SHOP & SHOP UI BUILDER */
 function openShop(){
   if(document.pointerLockElement) document.exitPointerLock();
+  roundReady = false;
+  hostRoundReady = false;
+  remoteRoundReady.clear();
+  roundReadyTotal = multiplayerMode === 'online-host' ? 1 + networkConnections.size : Math.max(1, roundReadyTotal);
   document.getElementById('shopOverlay').classList.remove('hidden');
   buildShopUI();
+  updateRoundReadyUI();
 }
 function buildShopUI(){
   document.getElementById('shopScoreDisplay').textContent = 'Points Available: ' + state.score;
@@ -3122,6 +3241,8 @@ function buildShopUI(){
 }
 
 function startWave(){
+  roundReady = false;
+  remoteRoundReady.clear();
   state.wave++;
   state.betweenWaves = false;
   showMsg('WAVE ' + state.wave);
@@ -3148,9 +3269,7 @@ function checkWaveClear(){
 }
 
 document.getElementById('nextWaveBtn').addEventListener('click', ()=>{
-  document.getElementById('shopOverlay').classList.add('hidden');
-  if(!touchControlsEnabled && canvas.requestPointerLock) canvas.requestPointerLock();
-  startWave();
+  setRoundReady();
 });
 
 function die(){
@@ -3160,6 +3279,38 @@ function die(){
   if(state.score > bestScore){ bestScore = state.score; localStorage.setItem('tf_bestscore', bestScore); }
   document.getElementById('deathWaveText').textContent = 'You reached wave ' + state.wave + ' — Score: ' + state.score;
   document.getElementById('deathOverlay').classList.remove('hidden');
+}
+
+function respawnPlayer(){
+  let spawnPoint = null;
+  for(let tries=0; tries<30; tries++){
+    const candidate = validEdgePoint();
+    const clearOfEnemies = enemies.every(enemy=>!enemy.alive || enemy.mesh.position.distanceTo(new THREE.Vector3(candidate.x, 0, candidate.z)) > 5);
+    if(clearOfEnemies){ spawnPoint = candidate; break; }
+  }
+  if(!spawnPoint) spawnPoint = validEdgePoint();
+
+  player.pos.set(spawnPoint.x, EYE_H, spawnPoint.z);
+  player.vy = 0;
+  player.grounded = true;
+  player.hp = player.maxHp;
+  player.mana = player.maxMana;
+  player.stamina = player.maxStamina;
+  player.alive = true;
+  player.blocking = false;
+  player.charging = false;
+  player.chargeT = 0;
+  player.shieldTimer = 0;
+  player.cooldowns.primary = 0;
+  player.cooldowns.secondary = 0;
+  player.cooldowns.shout = 0;
+  player.reloading = false;
+  player.reloadTimer = 0;
+  player.reloadingWeapon = null;
+  document.getElementById('deathOverlay').classList.add('hidden');
+  camera.position.copy(player.pos);
+  if(!touchControlsEnabled && canvas.requestPointerLock) canvas.requestPointerLock();
+  showMsg('RESPAWNED');
 }
 
 function togglePause(){
@@ -3446,7 +3597,7 @@ document.getElementById('startBtn').addEventListener('click', ()=>{
   enterArena(false);
 });
 document.getElementById('retryBtn').addEventListener('click', ()=>{
-  location.reload();
+  respawnPlayer();
 });
 document.getElementById('resumeBtn').addEventListener('click', ()=>{
   togglePause();
