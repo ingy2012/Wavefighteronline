@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Wavefighter</title>
+<title>Wavefighter Beta</title>
 <style>
   html,body{margin:0;padding:0;overflow:hidden;background:#000;font-family:'Segoe UI',Arial,sans-serif;user-select:none;-webkit-user-select:none;}
   #c{display:block;width:100vw;height:100vh;}
@@ -51,6 +51,7 @@
   #roomCode{width:130px;text-transform:uppercase;letter-spacing:2px;}
   .mp-status{font-size:11px;opacity:.72;margin-top:9px;min-height:16px;}
   @media (max-width:700px){#multiplayerPanel{max-height:31vh;overflow:auto}.controls-grid{grid-template-columns:1fr}.overlay{overflow-y:auto;padding:24px 12px;box-sizing:border-box}.overlay h1{font-size:28px}#startOverlay{justify-content:flex-start;padding-top:28px;padding-bottom:40px}#startOverlay>*{flex-shrink:0}}
+  @media (max-height: 600px), (orientation: landscape){#startOverlay{max-height:90vh;overflow-y:auto}}
   
   button.big{background:linear-gradient(135deg,#ff8a3b,#ff3b6b);border:none;color:#fff;font-size:16px;font-weight:700;letter-spacing:2px;padding:12px 36px;border-radius:24px;cursor:pointer;box-shadow:0 4px 20px rgba(255,80,80,.4);}
   button.big:active{transform:scale(.96);}
@@ -128,6 +129,15 @@
       flex-direction:row;
       justify-content:center;
     }
+    
+  /* Enable full page scrolling in landscape mode */
+  body {
+    overflow-y: auto !important;
+    height: auto !important;
+    min-height: 100vh;
+    -webkit-overflow-scrolling: touch;
+  }
+
   }
 
   /* Portrait Layout */
@@ -801,6 +811,14 @@ function drawRadar(){
     radarCtx.fillStyle = e.type === 'gun' ? '#c060ff' : (e.type === 'magic' ? '#50a0ff' : '#ff5050');
     radarCtx.fill();
   }
+  for(const remote of remotePlayers.values()){
+    if(!remote.state.alive) continue;
+    const p = worldToRadar(remote.state.position.x, remote.state.position.z);
+    radarCtx.beginPath();
+    radarCtx.arc(p.rx, p.ry, 3.5, 0, Math.PI*2);
+    radarCtx.fillStyle = '#35e0c0';
+    radarCtx.fill();
+  }
   const pp = worldToRadar(player.pos.x, player.pos.z);
   const dirX = -Math.sin(player.yaw), dirZ = -Math.cos(player.yaw);
   const perpX = -dirZ, perpZ = dirX;
@@ -1171,19 +1189,80 @@ function makeEnemy(type){
   return grp;
 }
 
+function getRemoteVisualType(state){
+  if(state.style === 'fps') return 'gun';
+  if(state.style === 'melee') return 'melee';
+  return 'magic';
+}
+
+function getRemoteSpellColor(id){
+  const spell = RT_SPELLS.concat(LT_SPELLS).find(candidate=>candidate.id===id);
+  return spell ? spell.color : 0x66d9ff;
+}
+
+function addRemoteWeaponVisual(mesh, style, weaponId, secondaryWeaponId){
+  const rightArm = mesh.userData.rArmGrp;
+  const leftArm = mesh.userData.lArmGrp;
+  if(!rightArm || !leftArm) return;
+  if(style === 'fps') return;
+  rightArm.children.splice(1).forEach(child=>rightArm.remove(child));
+  leftArm.children.splice(1).forEach(child=>leftArm.remove(child));
+
+  if(style === 'magic'){
+    const orbGeometry = new THREE.SphereGeometry(0.18, 8, 8);
+    const rightOrb = new THREE.Mesh(orbGeometry, new THREE.MeshBasicMaterial({color:getRemoteSpellColor(weaponId), transparent:true, opacity:0.9}));
+    const leftOrb = new THREE.Mesh(orbGeometry, new THREE.MeshBasicMaterial({color:getRemoteSpellColor(secondaryWeaponId), transparent:true, opacity:0.9}));
+    rightOrb.position.set(0, -0.6, -0.1);
+    leftOrb.position.set(0, -0.6, -0.1);
+    rightArm.add(rightOrb);
+    leftArm.add(leftOrb);
+    return;
+  }
+  const weaponMaterial = new THREE.MeshStandardMaterial({color:0xd9e2e8, roughness:0.4, metalness:0.6});
+  let weapon;
+  if(weaponId === 'bow'){
+    weapon = new THREE.Mesh(new THREE.TorusGeometry(0.32, 0.035, 6, 16, Math.PI), weaponMaterial);
+    weapon.rotation.set(Math.PI / 2, 0, Math.PI / 2);
+    weapon.position.set(0, -0.45, -0.15);
+  } else if(weaponId === 'spear'){
+    weapon = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 1.35), weaponMaterial);
+    weapon.rotation.x = Math.PI / 2;
+    weapon.position.set(0, -0.55, -0.35);
+  } else if(weaponId === 'claymore'){
+    weapon = new THREE.Mesh(new THREE.BoxGeometry(0.1, 1.25, 0.18), weaponMaterial);
+    weapon.rotation.x = Math.PI / 2;
+    weapon.position.set(0, -0.72, -0.3);
+  } else {
+    weapon = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.9, 0.12), weaponMaterial);
+    weapon.rotation.x = Math.PI / 2;
+    weapon.position.set(0, -0.6, -0.3);
+  }
+  rightArm.add(weapon);
+}
+
 class RemotePlayer {
   constructor(id, initialState){
     this.id = String(id);
-    this.mesh = makeEnemy('magic');
+    this.mesh = null;
+    this.visualKey = '';
+    this.state = { position:{x:0,y:0,z:0}, rotation:{yaw:0,pitch:0}, style:'magic', activeWeapon:'', activeWeaponName:'', secondaryWeapon:'', health:100, maxHealth:100, alive:true, name:'' };
+    this.update(initialState || {});
+  }
+  refreshVisual(){
+    const visualType = getRemoteVisualType(this.state);
+    const visualKey = visualType + ':' + this.state.activeWeapon + ':' + this.state.secondaryWeapon;
+    if(this.mesh && this.visualKey === visualKey) return;
+    if(this.mesh) scene.remove(this.mesh);
+    this.mesh = makeEnemy(visualType);
     this.mesh.userData.remotePlayerId = this.id;
     this.mesh.userData.isRemotePlayer = true;
     this.mesh.userData.parts.forEach(part=>{
-      part.material.color.setHex(0x35e0c0);
-      part.material.emissive.setHex(0x063b38);
+      part.material.color.setHex(0x35e06f);
+      part.material.emissive.setHex(0x063b20);
     });
+    addRemoteWeaponVisual(this.mesh, this.state.style, this.state.activeWeapon, this.state.secondaryWeapon);
     scene.add(this.mesh);
-    this.state = { position:{x:0,y:0,z:0}, rotation:{yaw:0,pitch:0}, activeWeapon:'', health:100, maxHealth:100, alive:true, name:'' };
-    this.update(initialState || {});
+    this.visualKey = visualKey;
   }
   update(nextState){
     if(nextState.position){
@@ -1195,11 +1274,15 @@ class RemotePlayer {
       this.state.rotation.yaw = Number(nextState.rotation.yaw) || 0;
       this.state.rotation.pitch = Number(nextState.rotation.pitch) || 0;
     }
+    if(nextState.style !== undefined) this.state.style = String(nextState.style);
     if(nextState.activeWeapon !== undefined) this.state.activeWeapon = String(nextState.activeWeapon);
+    if(nextState.activeWeaponName !== undefined) this.state.activeWeaponName = String(nextState.activeWeaponName);
+    if(nextState.secondaryWeapon !== undefined) this.state.secondaryWeapon = String(nextState.secondaryWeapon);
     if(nextState.health !== undefined) this.state.health = Math.max(0, Number(nextState.health) || 0);
     if(nextState.maxHealth !== undefined) this.state.maxHealth = Math.max(1, Number(nextState.maxHealth) || 100);
     if(nextState.alive !== undefined) this.state.alive = Boolean(nextState.alive);
     if(nextState.name !== undefined) this.state.name = String(nextState.name).slice(0,18);
+    this.refreshVisual();
     this.mesh.position.set(this.state.position.x, this.state.position.y - EYE_H, this.state.position.z);
     this.mesh.rotation.y = this.state.rotation.yaw;
     this.mesh.visible = this.state.alive;
@@ -1210,14 +1293,17 @@ class RemotePlayer {
       id:this.id,
       position:{...this.state.position},
       rotation:{...this.state.rotation},
+      style:this.state.style,
       activeWeapon:this.state.activeWeapon,
+      activeWeaponName:this.state.activeWeaponName,
+      secondaryWeapon:this.state.secondaryWeapon,
       health:this.state.health,
       maxHealth:this.state.maxHealth,
       alive:this.state.alive,
       name:this.state.name
     };
   }
-  destroy(){ scene.remove(this.mesh); }
+  destroy(){ if(this.mesh) scene.remove(this.mesh); }
 }
 
 const remotePlayers = new Map();
@@ -1338,7 +1424,8 @@ function updateShieldVisual(dt){
 }
 const geoArrow = new THREE.ConeGeometry(0.06,0.6,6);
 const geoBall = new THREE.SphereGeometry(0.22,8,8);
-const geoRocket = new THREE.CylinderGeometry(0.1,0.1,0.5,8);
+const geoRocket = new THREE.CylinderGeometry(0.18,0.14,0.9,10);
+const geoFlame = new THREE.SphereGeometry(0.16,6,6);
 
 const geoEnemyBullet = new THREE.SphereGeometry(0.08, 4, 4);
 const matEnemyBullet = new THREE.MeshBasicMaterial({color:0xffcc00});
@@ -1346,6 +1433,26 @@ const geoEnemySpell = new THREE.SphereGeometry(0.18, 8, 8);
 const matEnemySpell = new THREE.MeshBasicMaterial({color:0x66d9ff});
 
 function spawnProjectile(opts){ scene.add(opts.mesh); projectiles.push(opts); }
+
+function spawnExplosion(position){
+  const mesh = new THREE.Mesh(
+    new THREE.SphereGeometry(0.45, 12, 8),
+    new THREE.MeshBasicMaterial({color:0xff7a22, transparent:true, opacity:0.85})
+  );
+  mesh.position.copy(position);
+  scene.add(mesh);
+  effects.push({mesh, life:0.32, maxLife:0.32, isExplosion:true});
+}
+
+function spawnFlameParticle(position, direction){
+  const mesh = new THREE.Mesh(
+    geoFlame,
+    new THREE.MeshBasicMaterial({color:Math.random() > 0.35 ? 0xff6a18 : 0xffd447, transparent:true, opacity:0.9})
+  );
+  mesh.position.copy(position);
+  scene.add(mesh);
+  effects.push({mesh, vel:direction.clone().multiplyScalar(15 + Math.random()*10), life:0.16 + Math.random()*0.12, maxLife:0.28, isFlame:true});
+}
 
 function fireArrow(damage){
   const unlocked = getUnlockedArrows();
@@ -1367,10 +1474,14 @@ function fireRocket(){
   const mesh = new THREE.Mesh(geoRocket, mat);
   mesh.position.copy(player.pos).add(dir.clone().multiplyScalar(0.6));
   mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), dir);
-  spawnProjectile({mesh, vel:dir.clone().multiplyScalar(32), dmg:65, friendly:true, life:3.5, splash:5.0});
+  spawnProjectile({mesh, vel:dir.clone().multiplyScalar(32), dmg:65, friendly:true, life:3.5, splash:5.0, explosive:true});
 }
 function fireFlameStream(){
   const dir = getForward();
+  for(let i=0;i<3;i++){
+    const spread = new THREE.Vector3((Math.random()-0.5)*0.18, (Math.random()-0.5)*0.18, (Math.random()-0.5)*0.18);
+    spawnFlameParticle(player.pos.clone().add(dir.clone().multiplyScalar(0.55 + Math.random()*0.25)), dir.clone().add(spread).normalize());
+  }
   raycaster.set(player.pos.clone(), dir);
   raycaster.far = 12;
   const enemyPartMeshes = [];
@@ -1431,18 +1542,50 @@ function firePoisonBolt(){
     onHit:(e)=>{ e.dotTimer=spell.dot.time; e.dotDmg=dotDmg; e.dotAcc=0; e.slowTimer=spell.slow.time; e.slowFactor=slowFactor; }});
 }
 
-function fireEnemyBullet(e){
-  const dir = player.pos.clone().sub(e.mesh.position).setY(0).normalize();
+function getEnemyTargets(){
+  const targets = [];
+  if(player.alive) targets.push({id:'local', position:player.pos, remote:null});
+  for(const remote of remotePlayers.values()){
+    if(remote.state.alive) targets.push({id:remote.id, position:new THREE.Vector3(remote.state.position.x, remote.state.position.y, remote.state.position.z), remote});
+  }
+  return targets;
+}
+
+function damageEnemyTarget(target, amount){
+  if(!target || !target.remote){
+    if(player.shieldTimer > 0){
+      flashScreen('120,220,255',0.15);
+      return;
+    }
+    let damage = amount;
+    if(player.blocking) damage *= 0.3;
+    player.hp = Math.max(0, player.hp - damage);
+    flashScreen('255,40,40',0.22);
+    return;
+  }
+  const remote = target.remote;
+  const damage = amount;
+  remote.state.health = Math.max(0, remote.state.health - damage);
+  remote.state.alive = remote.state.health > 0;
+  remote.mesh.visible = remote.state.alive;
+  const connection = networkConnections.get(remote.id);
+  if(connection && connection.open){
+    try { connection.send({type:'player-damage', targetId:remote.id, amount:damage, health:remote.state.health, alive:remote.state.alive}); } catch(err) {}
+  }
+}
+
+function fireEnemyBullet(e, target){
+  const dir = target.position.clone().sub(e.mesh.position).setY(0).normalize();
   const mesh = new THREE.Mesh(geoEnemyBullet, matEnemyBullet);
   // Spawn bullet perfectly aligned with the gun barrel extending from the shoulder pivot
   mesh.position.copy(e.mesh.position).add(new THREE.Vector3(0.35,1.3,0)).add(dir.clone().multiplyScalar(0.8));
-  spawnProjectile({mesh, vel:dir.clone().multiplyScalar(32), dmg:7, friendly:false, life:3.5, splash:0});
+  spawnProjectile({mesh, vel:dir.clone().multiplyScalar(32), dmg:7, friendly:false, life:3.5, splash:0, targetId:target.id});
 }
-function fireEnemySpell(e){
-  const dir = player.pos.clone().sub(e.mesh.position).setY(0).normalize();
+function fireEnemySpell(e, target){
+  const dir = target.position.clone().sub(e.mesh.position).setY(0).normalize();
   const mesh = new THREE.Mesh(geoEnemySpell, matEnemySpell);
   mesh.position.copy(e.mesh.position).add(new THREE.Vector3(0.35,1.3,0)).add(dir.clone().multiplyScalar(0.8));
-  spawnProjectile({mesh, vel:dir.clone().multiplyScalar(14), dmg:15, friendly:false, life:5, splash:0});
+  spawnProjectile({mesh, vel:dir.clone().multiplyScalar(14), dmg:15, friendly:false, life:5, splash:0, targetId:target.id});
 }
 
 function fireLightningCharged(frac){
@@ -1508,8 +1651,12 @@ function updateEffects(dt){
     const t = 1-(fx.life/fx.maxLife);
     if(fx.isBeam){
       fx.mesh.material.opacity = 0.9*(1-t);
+    } else if(fx.isFlame){
+      fx.mesh.position.addScaledVector(fx.vel, dt);
+      fx.mesh.scale.setScalar(1-t*0.8);
+      fx.mesh.material.opacity = 0.9*(1-t);
     } else {
-      fx.mesh.scale.setScalar(1+t*7);
+      fx.mesh.scale.setScalar(fx.isExplosion ? 1+t*5 : 1+t*7);
       fx.mesh.material.opacity = 0.8*(1-t);
     }
     if(fx.life<=0){ scene.remove(fx.mesh); effects.splice(i,1); }
@@ -1532,7 +1679,13 @@ let networkPeer = null;
 let networkPeerId = '';
 let networkSendTimer = null;
 let legacyRoomFallbackTried = false;
+let hostPeerId = '';
 const networkConnections = new Map();
+const multiplayerSession = {
+  roomCode: '',
+  mode: 'solo',
+  version: 1
+};
 let bestWave = parseInt(localStorage.getItem('tf_bestwave')||'0',10);
 let bestScore = parseInt(localStorage.getItem('tf_bestscore')||'0',10);
 document.getElementById('bestWave').textContent = bestWave;
@@ -1631,32 +1784,102 @@ function savePlayerName(){
 function stopNetworkSendLoop(){
   if(networkSendTimer){ clearInterval(networkSendTimer); networkSendTimer = null; }
 }
+function getNetworkSessionId(){
+  return multiplayerSession.roomCode || multiplayerRoom || (networkPeerId || 'solo');
+}
 function startNetworkSendLoop(){
-  if(networkSendTimer || !networkPeer) return;
+  stopNetworkSendLoop();
+  if(!networkPeer) return;
   networkSendTimer = setInterval(()=>{
-    if(!gameStarted) return;
-    const packet = Object.assign({}, window.getGameState(), {id:networkPeerId || networkPeer.id});
+    if(!gameStarted || !networkPeer) return;
+    const snapshot = window.getGameState();
+    const packet = {
+      type: 'state-sync',
+      version: multiplayerSession.version,
+      room: multiplayerSession.roomCode || multiplayerRoom || '',
+      sessionId: getNetworkSessionId(),
+      timestamp: Date.now(),
+      id: networkPeerId || networkPeer.id,
+      payload: Object.assign({}, snapshot, {id: networkPeerId || networkPeer.id})
+    };
     for(const connection of networkConnections.values()){
-      if(connection.open) connection.send(packet);
+      if(connection && connection.open) connection.send(packet);
     }
   }, 50);
 }
 function closeNetwork(){
   stopNetworkSendLoop();
-  for(const connection of networkConnections.values()) connection.close();
+  for(const connection of networkConnections.values()){
+    try { connection.close(); } catch (err) {}
+  }
   networkConnections.clear();
-  if(networkPeer){ networkPeer.destroy(); networkPeer = null; }
+  if(networkPeer){
+    try { networkPeer.destroy(); } catch (err) {}
+    networkPeer = null;
+  }
   networkPeerId = '';
+  multiplayerSession.roomCode = '';
   lastSharedMazeKey = '';
+  hostPeerId = '';
 }
 function bindNetworkConnection(connection){
+  if(!connection) return;
   networkConnections.set(connection.peer, connection);
   connection.on('open', ()=>{
-    setMultiplayerStatus('Connected to ' + connection.peer + '. Start the match to begin state sync.');
+    const peerLabel = connection.peer || 'peer';
+    setMultiplayerStatus('Connected to ' + peerLabel + '. Syncing arena state.');
+    try {
+      connection.send({
+        type: 'peer-hello',
+        room: multiplayerSession.roomCode || multiplayerRoom || '',
+        id: networkPeerId || networkPeer.id,
+        name: savePlayerName()
+      });
+    } catch (err) {}
     startNetworkSendLoop();
   });
   connection.on('data', data=>{
     if(!data || typeof data !== 'object') return;
+    if(data.type === 'peer-hello'){
+      try {
+        connection.send({
+          type: 'peer-hello-ack',
+          room: multiplayerSession.roomCode || multiplayerRoom || '',
+          id: networkPeerId || networkPeer.id,
+          name: savePlayerName()
+        });
+      } catch (err) {}
+      return;
+    }
+    if(data.type === 'peer-hello-ack'){
+      setMultiplayerStatus('Peer handshake complete for room ' + (multiplayerSession.roomCode || multiplayerRoom || 'online') + '.');
+      return;
+    }
+    if(data.type === 'player-damage'){
+      if(String(data.targetId) === String(networkPeerId || networkPeer.id)){
+        player.hp = Math.max(0, Number(data.health) || 0);
+        player.alive = data.alive !== false && player.hp > 0;
+        flashScreen('255,40,40',0.22);
+      }
+      return;
+    }
+    if(data.type === 'state-sync'){
+      const payload = data.payload || data;
+      const packetId = String(data.id || payload.id || connection.peer || '');
+      if(!packetId || packetId === String(networkPeerId || networkPeer.id)) return;
+      if(data.room && multiplayerSession.roomCode && data.room !== multiplayerSession.roomCode) return;
+      const incomingPayload = multiplayerMode === 'online-host' && remotePlayers.has(packetId) ?
+        Object.assign({}, payload, {health:remotePlayers.get(packetId).state.health, alive:remotePlayers.get(packetId).state.alive}) : payload;
+      window.applyRemoteState(Object.assign({}, incomingPayload, {id: packetId}));
+      if(multiplayerMode === 'online-host'){
+        for(const other of networkConnections.values()){
+          if(other !== connection && other.open) {
+            try { other.send(data); } catch (err) {}
+          }
+        }
+      }
+      return;
+    }
     if(data.id === undefined) data.id = connection.peer;
     window.applyRemoteState(data);
     if(multiplayerMode === 'online-host'){
@@ -1682,13 +1905,17 @@ function connectPeerRoom(asHost, roomCode, useLegacyId){
     setMultiplayerStatus('PeerJS could not load. Single-player remains available.');
     return;
   }
-  const targetPeerId = useLegacyId ? roomCode : roomPeerId(roomCode);
-  setMultiplayerStatus(asHost ? 'Creating room ' + roomCode + '…' : 'Connecting to room ' + roomCode + '…');
-  networkPeer = asHost ? new Peer(roomPeerId(roomCode)) : new Peer();
+  const normalisedCode = String(roomCode || '').trim().toUpperCase();
+  multiplayerSession.roomCode = normalisedCode;
+  multiplayerRoom = normalisedCode;
+  const targetPeerId = useLegacyId ? normalisedCode : roomPeerId(normalisedCode);
+  if(!asHost) hostPeerId = targetPeerId;
+  setMultiplayerStatus(asHost ? 'Creating room ' + normalisedCode + '…' : 'Connecting to room ' + normalisedCode + '…');
+  networkPeer = asHost ? new Peer(roomPeerId(normalisedCode)) : new Peer();
   networkPeer.on('open', id=>{
     networkPeerId = id;
     if(asHost){
-      setMultiplayerStatus('Room ' + roomCode + ' is live. Waiting for a player…');
+      setMultiplayerStatus('Room ' + normalisedCode + ' is live. Waiting for a player…');
     } else {
       bindNetworkConnection(networkPeer.connect(targetPeerId, {reliable:true}));
     }
@@ -1701,8 +1928,8 @@ function connectPeerRoom(asHost, roomCode, useLegacyId){
     if(type === 'unavailable-id') message = asHost ? 'That room code is already in use. Create another room.' : 'That room is already occupied. Check the code and try again.';
     if(type === 'peer-unavailable' && !asHost && !useLegacyId && !legacyRoomFallbackTried){
       legacyRoomFallbackTried = true;
-      setMultiplayerStatus('Trying compatibility connection for room ' + roomCode + '…');
-      connectPeerRoom(false, roomCode, true);
+      setMultiplayerStatus('Trying compatibility connection for room ' + normalisedCode + '…');
+      connectPeerRoom(false, normalisedCode, true);
       return;
     }
     if(type === 'peer-unavailable' || type === 'disconnected') message = 'Room not found or host is offline. Check the code and try again.';
@@ -1712,6 +1939,7 @@ function connectPeerRoom(asHost, roomCode, useLegacyId){
 function createRoom(){
   savePlayerName();
   multiplayerMode = 'online-host';
+  multiplayerSession.mode = 'online-host';
   legacyRoomFallbackTried = false;
   multiplayerRoom = makeRoomCode();
   document.getElementById('roomCode').value = multiplayerRoom;
@@ -1723,6 +1951,7 @@ function joinRoom(){
   const code = (document.getElementById('roomCode').value || '').trim().toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,6);
   if(code.length !== 6){ setMultiplayerStatus('Enter a 6-character room code.'); return; }
   multiplayerMode = 'online-guest';
+  multiplayerSession.mode = 'online-guest';
   legacyRoomFallbackTried = false;
   multiplayerRoom = code;
   document.getElementById('roomCode').value = code;
@@ -1732,6 +1961,7 @@ function joinRoom(){
 function selectLocalCoop(){
   savePlayerName();
   multiplayerMode = 'local';
+  multiplayerSession.mode = 'local';
   multiplayerRoom = '';
   document.getElementById('copyInviteBtn').style.display = 'none';
   setMultiplayerStatus('Local co-op selected. Networking is disabled and the single-player loop is unchanged.');
@@ -2297,7 +2527,14 @@ function updateEnemies(dt, now){
     
     if(!e.alive) continue;
     const disabled = e.frozenTimer>0 || e.stunTimer>0;
-    const dist = player.pos.clone().setY(0).distanceTo(e.mesh.position.clone().setY(0));
+    const targets = getEnemyTargets();
+    if(!targets.length) continue;
+    const target = targets.reduce((closest, candidate)=>{
+      const distance = candidate.position.distanceTo(e.mesh.position);
+      return !closest || distance < closest.distance ? {player:candidate, distance} : closest;
+    }, null);
+    const targetPlayer = target.player;
+    const dist = target.distance;
     
     // --- ANIMATION CONTROLS ---
     const rArm = e.mesh.userData.rArmGrp;
@@ -2312,7 +2549,7 @@ function updateEnemies(dt, now){
 
     if(!disabled){
       const spd = e.speed * (e.slowTimer>0 ? e.slowFactor : 1);
-      const toPlayer = player.pos.clone().setY(0).sub(e.mesh.position.clone().setY(0));
+      const toPlayer = targetPlayer.position.clone().setY(0).sub(e.mesh.position.clone().setY(0));
       e.attackCd -= dt;
       
       if(e.type === 'gun' || e.type === 'magic'){
@@ -2333,7 +2570,7 @@ function updateEnemies(dt, now){
             if (e.attackCd > 1.0) targetRArmX -= 0.4; // Recoil tick
           }
           if(e.attackCd<=0 && e.slowTimer<=0 && dist < 25){
-             fireEnemyBullet(e); 
+             fireEnemyBullet(e, targetPlayer);
              e.attackCd = 1.2; 
           }
         } 
@@ -2348,25 +2585,19 @@ function updateEnemies(dt, now){
              }
           }
           if(e.attackCd<=0 && e.slowTimer<=0 && dist < 25){
-             fireEnemySpell(e); 
+             fireEnemySpell(e, targetPlayer);
              e.attackCd = 2.5; 
           }
         }
       } else { 
         // Melee logic
-        if(dist > 1.3){ 
+        const meleeDist = targetPlayer.position.clone().setY(0).distanceTo(e.mesh.position.clone().setY(0));
+        if(meleeDist > 1.3){
           toPlayer.normalize(); 
           e.mesh.position.addScaledVector(toPlayer, spd*dt); 
           isMoving = true; 
         } else if(e.attackCd<=0 && e.slowTimer<=0){
-          if(player.shieldTimer > 0){
-            flashScreen('120,220,255',0.15);
-          } else {
-            let dmg = 9;
-            if(player.blocking) dmg *= 0.3;
-            player.hp -= dmg;
-            flashScreen('255,40,40',0.22);
-          }
+          damageEnemyTarget(targetPlayer, 9);
           e.attackCd = 0.9;
         }
         
@@ -2393,7 +2624,7 @@ function updateEnemies(dt, now){
       lLeg.rotation.x *= 0.8;
     }
     
-    e.mesh.lookAt(player.pos.x, e.mesh.position.y, player.pos.z);
+    e.mesh.lookAt(targetPlayer.position.x, e.mesh.position.y, targetPlayer.position.z);
     
     const colHex = e.frozenTimer>0 ? 0x2a6fdd : (e.dotTimer>0 ? 0x66ff66 : (e.slowTimer>0 ? 0xaee8ff : e.baseColorHex));
     for(const part of e.mesh.userData.parts){
@@ -2408,7 +2639,8 @@ function updateProjectiles(dt){
     p.life -= dt;
     p.mesh.position.addScaledVector(p.vel, dt);
     let remove = p.life<=0;
-    if(!remove && isInsideWall(p.mesh.position, 0.2)) remove = true;
+    let impact = false;
+    if(!remove && isInsideWall(p.mesh.position, 0.2)){ remove = true; impact = true; }
     if(!remove && p.friendly){
       for(const e of enemies){
         if(!e.alive) continue;
@@ -2424,23 +2656,24 @@ function updateProjectiles(dt){
               }
             }
           }
-          remove = true; break;
+          remove = true; impact = true; break;
         }
       }
     } else if(!remove){
-      if(p.mesh.position.distanceTo(player.pos) < 1.0){
-        if(player.shieldTimer > 0){
-          flashScreen('120,220,255',0.15);
-        } else {
-          let dmg = p.dmg;
-          if(player.blocking) dmg *= 0.3;
-          player.hp -= dmg;
-          flashScreen('180,60,255',0.2);
-        }
+      const remoteTarget = p.targetId && remotePlayers.get(String(p.targetId));
+      const remotePosition = remoteTarget ? new THREE.Vector3(remoteTarget.state.position.x, remoteTarget.state.position.y, remoteTarget.state.position.z) : null;
+      if(remoteTarget && remoteTarget.state.alive && p.mesh.position.distanceTo(remotePosition) < 1.0){
+        damageEnemyTarget({remote:remoteTarget}, p.dmg);
+        remove = true;
+      } else if(p.targetId === 'local' && p.mesh.position.distanceTo(player.pos) < 1.0){
+        damageEnemyTarget({remote:null}, p.dmg);
         remove = true;
       }
     }
-    if(remove){ scene.remove(p.mesh); projectiles.splice(i,1); }
+    if(remove){
+      if(p.explosive && impact) spawnExplosion(p.mesh.position);
+      scene.remove(p.mesh); projectiles.splice(i,1);
+    }
   }
 }
 
@@ -2513,6 +2746,11 @@ function getActiveWeaponState(){
   return {id:spell.id, name:spell.name, style:player.style};
 }
 
+function getActiveSecondarySpellState(){
+  const spell = getUnlockedLTSpells()[player.ltSpellIndex] || getUnlockedLTSpells()[0];
+  return spell ? {id:spell.id, name:spell.name} : {id:'', name:''};
+}
+
 function getSharedWorldState(){
   return {
     maze:currentMazeData ? JSON.parse(JSON.stringify(currentMazeData)) : null,
@@ -2553,10 +2791,15 @@ function applySharedWorldState(world){
       enemy = {mesh, networkId:id, hp:enemyState.hp, maxHp:enemyState.maxHp, speed:enemyState.speed,
         type:enemyState.type || 'melee', attackCd:0, alive:true, preferredRange:enemyState.preferredRange || 1.4,
         baseColorHex:enemyState.baseColorHex || 0xdd3b3b, frozenTimer:0, stunTimer:0, dotTimer:0,
-        dotDmg:0, dotAcc:0, slowTimer:0, slowFactor:1};
+        dotDmg:0, dotAcc:0, slowTimer:0, slowFactor:1,
+        networkTarget:new THREE.Vector3(Number(enemyState.x)||0, Number(enemyState.y)||0, Number(enemyState.z)||0)};
       enemies.push(enemy);
     }
-    enemy.mesh.position.set(Number(enemyState.x)||0, Number(enemyState.y)||0, Number(enemyState.z)||0);
+    if(enemy.networkTarget){
+      enemy.networkTarget.set(Number(enemyState.x)||0, Number(enemyState.y)||0, Number(enemyState.z)||0);
+    } else {
+      enemy.networkTarget = enemy.mesh.position.clone();
+    }
     enemy.hp = Number(enemyState.hp) || 0;
     enemy.maxHp = Number(enemyState.maxHp) || enemy.maxHp;
     enemy.speed = Number(enemyState.speed) || enemy.speed;
@@ -2575,27 +2818,38 @@ function applySharedWorldState(world){
   }
 }
 
+function updateNetworkEnemyPositions(dt){
+  const smoothing = 1 - Math.exp(-dt * 18);
+  for(const enemy of enemies){
+    if(!enemy.networkTarget) continue;
+    enemy.mesh.position.lerp(enemy.networkTarget, smoothing);
+  }
+}
+
 function getGameState(){
   const weapon = getActiveWeaponState();
+  const secondaryWeapon = getActiveSecondarySpellState();
   return {
     player:{
       position:{x:player.pos.x, y:player.pos.y, z:player.pos.z},
       rotation:{yaw:player.yaw, pitch:player.pitch},
       activeWeapon:weapon.id,
       activeWeaponName:weapon.name,
+      secondaryWeapon:secondaryWeapon.id,
+      secondaryWeaponName:secondaryWeapon.name,
       style:weapon.style,
       health:player.hp,
       maxHealth:player.maxHp,
       alive:player.alive
     },
     game:{wave:state.wave, score:state.score, enemiesRemaining:state.enemiesRemaining, betweenWaves:state.betweenWaves, gameMode:gameMode},
-    world:getSharedWorldState()
+    world: multiplayerMode === 'online-guest' ? null : getSharedWorldState()
   };
 }
 
 function applyRemoteState(remoteState){
   if(!remoteState || remoteState.id === undefined || remoteState.id === null) return false;
-  if(remoteState.world && multiplayerMode === 'online-guest') applySharedWorldState(Object.assign({}, remoteState.world, remoteState.game || {}));
+  if(remoteState.world && multiplayerMode === 'online-guest' && hostPeerId && String(remoteState.id) === hostPeerId) applySharedWorldState(Object.assign({}, remoteState.world, remoteState.game || {}));
   const incoming = remoteState.player ? Object.assign({}, remoteState.player, {id:remoteState.id}) : remoteState;
   const id = String(incoming.id);
   if(incoming.remove || incoming.alive === false && incoming.position === undefined){
@@ -3131,6 +3385,7 @@ function frame(now){
 
     updateLocalPlayer(dt);
     if(multiplayerMode !== 'online-guest') updateEnemies(dt, now);
+    if(multiplayerMode === 'online-guest') updateNetworkEnemyPositions(dt);
     updateProjectiles(dt);
     updateEffects(dt);
     updateShieldVisual(dt);
